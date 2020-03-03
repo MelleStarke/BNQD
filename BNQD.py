@@ -1,5 +1,7 @@
 import gpflow as gpf
 import numpy as np
+import bnqd_plotter as plt
+from optimizers import *
 
 
 # Superclass only used as abstract class
@@ -8,7 +10,7 @@ class GPRegressionModel:
     def __init__self(self, x, y, kernel, lik=gpf.likelihoods.Gaussian):
         raise NotImplementedError
 
-    def train(self, num_restarts=10, verbose=False):
+    def train(self, method=RandomRestartOptimizer(), verbose=False):
         raise NotImplementedError
 
     def predict(self, x_test):
@@ -24,7 +26,7 @@ class GPRegressionModel:
 class ContinuousModel(GPRegressionModel):
     isOptimized = False
 
-    def __init__(self, x, y, kernel, lik=GPy.likelihoods.Gaussian()):
+    def __init__(self, x, y, kernel, lik):
         self.x = x
         self.y = y
         self.n = x.shape[0]
