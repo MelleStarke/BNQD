@@ -1,7 +1,8 @@
 import gpflow as gpf
 import numpy as np
-import bnqd_plotter as plt
 from optimizers import *
+import tensorflow as tf
+import plotter as plt
 
 
 # Superclass only used as abstract class
@@ -10,13 +11,13 @@ class GPRegressionModel:
     def __init__self(self, x, y, kernel, lik=gpf.likelihoods.Gaussian):
         raise NotImplementedError
 
-    def train(self, method=RandomRestartOptimizer(), verbose=False):
+    def train(self, optimizer=gpf.optimizers.Scipy, verbose=False):
         raise NotImplementedError
 
     def predict(self, x_test):
         raise NotImplementedError
 
-    def get_log_marginal_likelihood(self, mode='BIC'):
+    def log_marginal_likelihood(self, mode='BIC'):
         raise NotImplementedError
 
     def plot(self, x_test, axis=None, color=None):
@@ -26,7 +27,7 @@ class GPRegressionModel:
 class ContinuousModel(GPRegressionModel):
     isOptimized = False
 
-    def __init__(self, x, y, kernel, lik):
+    def __init__(self, x, y, kernel, lik=gpf.likelihoods.Gaussian):
         self.x = x
         self.y = y
         self.n = x.shape[0]
@@ -34,15 +35,15 @@ class ContinuousModel(GPRegressionModel):
         # Manual construction sometimes adds Gaussian white noise,
         # sometimes does not???
         #        self.m = GPy.core.GP(X = x, Y = y, kernel = self.kernel, likelihood = lik)
-        self.m = GPy.models.GPRegression(X=x, Y=y, kernel=self.kernel)
+        self.m = gpf.models.GPR((tf.constant(x, tf.float16), tf.constant(y, tf.float16)), self.kernel)
         self.ndim = np.ndim(x)
         self.BICscore = None
 
     #
-    def train(self, num_restarts=10, verbose=False):
+    def train(self, optimizer=gpf.optimizers.Scipy, verbose=False):
         """Train the continuous model
         """
-        self.m.optimize_restarts(num_restarts=num_restarts, verbose=verbose)
+        optimizer.minimize(self.log_marginal_likelihood, variables=self.m.trainable_parameters)
         self.isOptimized = True
 
     #
@@ -52,7 +53,7 @@ class ContinuousModel(GPRegressionModel):
         return self.m.predict(x_test, kern=self.m.kern.copy())
 
     #
-    def get_log_marginal_likelihood(self, mode='BIC'):
+    def log_marginal_likelihood(self, mode='BIC'):
         """Computes the log marginal likelihood for the continuous model. Since
         this is intractable, we instead approximate it.
 
