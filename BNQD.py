@@ -31,26 +31,28 @@ class ContinuousModel(GPRegressionModel):
         self.x = x
         self.y = y
         self.n = x.shape[0]
-        self.kernel = kernel.copy()
+        self.kernel = kernel
         # Manual construction sometimes adds Gaussian white noise,
         # sometimes does not???
         #        self.m = GPy.core.GP(X = x, Y = y, kernel = self.kernel, likelihood = lik)
-        self.m = gpf.models.GPR((tf.constant(x, tf.float16), tf.constant(y, tf.float16)), self.kernel)
+        self.m = gpf.models.GPR((x, y), self.kernel)
         self.ndim = np.ndim(x)
         self.BICscore = None
 
     #
-    def train(self, optimizer=gpf.optimizers.Scipy, verbose=False):
+    def train(self, optimizer=None, verbose=False):
         """Train the continuous model
         """
-        optimizer.minimize(self.log_marginal_likelihood, variables=self.m.trainable_parameters)
+        if optimizer is None:
+            optimizer = gpf.optimizers.Scipy()
+        optimizer.minimize(lambda: - self.m.log_marginal_likelihood(), variables=self.m.trainable_variables)
         self.isOptimized = True
 
     #
     def predict(self, x_test):
         if len(x_test.shape) == 1:
             x_test = np.atleast_2d(x_test).T
-        return self.m.predict(x_test, kern=self.m.kern.copy())
+        return self.m.predict_y(x_test)
 
     #
     def log_marginal_likelihood(self, mode='BIC'):
