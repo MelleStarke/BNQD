@@ -35,7 +35,7 @@ class ContinuousModel(GPRegressionModel):
         # Manual construction sometimes adds Gaussian white noise,
         # sometimes does not???
         #        self.m = GPy.core.GP(X = x, Y = y, kernel = self.kernel, likelihood = lik)
-        self.m = gpf.models.GPR((x, y), self.kernel)
+        self.m = gpf.models.GPR((tf.convert_to_tensor(x), tf.convert_to_tensor(y)), self.kernel)
         self.ndim = np.ndim(x)
         self.BICscore = None
 
