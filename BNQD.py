@@ -1,10 +1,10 @@
-import gpflow
+import gpflow as gpf
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from gpflow.models.model import DataPoint, MeanAndVariance
 from matplotlib import rc
 import pandas as pd
-import BNQD
 import os
 import warnings
 import importlib
@@ -13,25 +13,21 @@ import bisect
 import abc
 
 warnings.simplefilter('ignore')
-importlib.reload(BNQD)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # plt.style.use('seaborn-dark-palette') # plt.style.use('ggplot')
 np.random.seed(1)
 
 
-class GPRegressionModel():
+class GPRegressionModel(gpf.models.GPModel):
     """
     Abstract class for continuous and discontinuous models
     """
 
-    def __init__(self, X, Y, kernel, likelihood=gpflow.likelihoods.Gaussian(), mean_function=None):
-        self.X = X
-        self.Y = Y
-        self.n = X.shape[0]
-        self.kernel = kernel
-        self.likelihood = likelihood
-        self.mean_function = mean_function
-        self.BICscore = None
+    def __init__(self, X, Y, kernel, likelihood=gpf.likelihoods.Gaussian(), mean_function=None):
+        super().__init__(kernel, likelihood, mean_function)
+        self.data = (X, Y)
+        self.N = X.shape[0]  # N data points
+        self.BICscore = None  # log likelihood of the GP, with penalization for parameter amount
         self.isOptimized = False
 
     def train(self, optim, max_iter, verbose=False):
@@ -40,32 +36,17 @@ class GPRegressionModel():
     def predict(self, x_test, n_samples):
         raise NotImplementedError
 
-    def get_log_marginal_likelihood(self):
-        if not self.isOptimized:
-            print('Parameters have not been optimized; training now')
-            self.train()
-
-        if self.BICscore is None:
-            k = len(self.m.parameters) # parameters are represented as tuple, for documentation see gpflow.Module
-            L = self.m.log_likelihood()
-            BIC = L - k / 2 * np.log(self.n)
-            # BIC = -2 * L + np.log(self.n) * k # toDo: is this formula from wiki equivalent? https://en.wikipedia.org/wiki/Bayesian_information_criterion, https://github.com/SheffieldML/GPy/issues/298
-            self.BICscore = BIC
-        return self.BICscore
-        #raise NotImplementedError
-
     def plot(self, x_test, mean, var, samples, b = None):
         raise NotImplementedError
 
 
 class ContinuousModel(GPRegressionModel):
 
-    def __init__(self, X, Y, kernel, likelihood=gpflow.likelihoods.Gaussian(), mean_function=None, noise_variance=1.0):
+    def __init__(self, X, Y, kernel, likelihood=gpf.likelihoods.Gaussian(), mean_function=None, noise_variance=1.0):
         super().__init__(X, Y, kernel, likelihood, mean_function)
-        self.m = gpflow.models.GPR(data=(X, Y), kernel=kernel, mean_function=self.mean_function, noise_variance = noise_variance)
+        self.m = gpf.models.GPR(data=(X, Y), kernel=kernel, mean_function=self.mean_function, noise_variance = noise_variance)
 
-
-    def train(self, optim = gpflow.optimizers.Scipy(), max_iter=1000, verbose=True):
+    def train(self, optim = gpf.optimizers.Scipy(), max_iter=1000, verbose=True):
         # Minimization
         def objective_closure():
             return - self.m.log_marginal_likelihood()
@@ -74,9 +55,8 @@ class ContinuousModel(GPRegressionModel):
                                   self.m.trainable_variables,
                                   options=dict(maxiter=max_iter))
         if verbose:
-            gpflow.utilities.print_summary(self.m)
+            gpf.utilities.print_summary(self.m)
         self.isOptimized = True
-
 
     def predict(self, x_test, n_samples = 5):
         # predict mean and variance of latent GP at test points
@@ -86,13 +66,27 @@ class ContinuousModel(GPRegressionModel):
         samples = self.m.predict_f_samples(x_test, n_samples)
         return mean, var, samples
 
+    def predict_f(self, predict_at: DataPoint, full_cov: bool = False,
+                  full_output_cov: bool = False) -> MeanAndVariance:
+        return self.m.predict_f(predict_at, full_cov, full_output_cov)
 
-    def get_log_marginal_likelihood(self):
-        super().get_log_marginal_likelihood()
+    def log_likelihood(self):
+        if not self.isOptimized:
+            print('Parameters have not been optimized; training now')
+            self.train()
+
+        if self.BICscore is None:
+            k = len(self.m.parameters)  # parameters are represented as tuple, for documentation see gpf.Module
+            L = self.m.log_likelihood()
+            BIC = L - k / 2 * np.log(self.N)
+            # BIC = -2 * L + np.log(self.N) * k # toDo: is this formula from wiki equivalent? https://en.wikipedia.org/wiki/Bayesian_information_criterion, https://github.com/SheffieldML/GPy/issues/298
+            self.BICscore = BIC
+        return self.BICscore
 
     def plot(self, x_test, mean, var, samples, true_func = None, b = None):
         plt.figure(figsize=(12,8))
-        plt.plot(self.X, self.Y, 'kx', mew=2)
+        X, Y = self.data
+        plt.plot(X, Y, 'kx', mew=2)
         plt.plot(x_test, mean, 'C0', lw=2)
         plt.fill_between(x_test[:, 0],
                         mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
@@ -115,7 +109,7 @@ class ContinuousModel(GPRegressionModel):
 
 class DiscontinuousModel(GPRegressionModel):
 
-    def __init__(self, X, Y, kernel, label_func, likelihood=gpflow.likelihoods.Gaussian(), mean_function=None,
+    def __init__(self, X, Y, kernel, label_func, likelihood=gpf.likelihoods.Gaussian(), mean_function=None,
                  noise_variance=1.0):
         super().__init__(X, Y, kernel, likelihood, mean_function)
         # Label data using provided label function
@@ -130,7 +124,7 @@ class DiscontinuousModel(GPRegressionModel):
         m2 = ContinuousModel(self.x2, self.y2, kernel, likelihood, mean_function, noise_variance)
         self.submodels = [m1, m2]
 
-    def train(self, optim = gpflow.optimizers.Scipy(), max_iter=1000, verbose=True, share_hyp = False):
+    def train(self, optim = gpf.optimizers.Scipy(), max_iter=1000, verbose=True, share_hyp = False):
         param_list = list()
         for submodel in self.submodels:
             submodel.train(optim, max_iter, verbose)
@@ -167,27 +161,28 @@ xx = np.linspace(xlim[0], xlim[1], 100).reshape(100, 1)  # (N, D)
 mu = mean_function(xx)
 
 # Kernels
-linear = gpflow.kernels.Linear()
-rbf = gpflow.kernels.RBF()
-matern12 = gpflow.kernels.Matern12()
-matern32 = gpflow.kernels.Matern32()
-polynomial = gpflow.kernels.Polynomial()
-exp = gpflow.kernels.Exponential()
-arccos = gpflow.kernels.ArcCosine()
-periodic = gpflow.kernels.Periodic(gpflow.kernels.SquaredExponential())
-cosine = gpflow.kernels.Cosine(lengthscale = 0.12) + gpflow.kernels.Constant()
-periodic_matern52 = gpflow.kernels.Periodic(gpflow.kernels.Matern52())
+linear = gpf.kernels.Linear()
+rbf = gpf.kernels.RBF()
+matern12 = gpf.kernels.Matern12()
+matern32 = gpf.kernels.Matern32()
+polynomial = gpf.kernels.Polynomial()
+exp = gpf.kernels.Exponential()
+arccos = gpf.kernels.ArcCosine()
+periodic = gpf.kernels.Periodic(gpf.kernels.SquaredExponential())
+cosine = gpf.kernels.Cosine(lengthscale = 0.12) + gpf.kernels.Constant()
+periodic_matern52 = gpf.kernels.Periodic(gpf.kernels.Matern52())
 
 kernels = [matern12, rbf, periodic, cosine]
 
 # Optimizer for minimization
-optim = gpflow.optimizers.Scipy()
+optim = gpf.optimizers.Scipy()
 max_iter = 1000
 continuous = ContinuousModel(X, Y, linear)
 model = continuous.m
 continuous.train()
 mean, var, samples =  continuous.predict(xx, n_samples_prior)
 continuous.plot(xx, mean, var, samples, mu, b = 0.5)
+plt.show()
 
 # label_func = lambda x: x < b
 # discontinuous = DiscontinuousModel(X,Y, linear, label_func)
