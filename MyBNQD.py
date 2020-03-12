@@ -4,6 +4,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import gpflow as gf
 import warnings
+import copy
 
 from typing import Optional, Tuple, Union, List, Callable, Any
 
@@ -98,19 +99,30 @@ class ContinuousModel(BNQDModel):
     def log_likelihood(self, *args, **kwargs) -> tf.Tensor:
         if not self.isTrained:
             # Prints a warning if the model hasn't been trained.
-            # Then trains it with the default optimizer
-            msg = "The model hasn't been trained yet." \
-                  "It will be trained using the default optimizer.\n" \
-                  "If you wish to use a different optimizer, please use the ContinuousModel.train(optimizer) function"
+            msg = "The model hasn't been trained yet. Please use the ContinuousModel.train() function"
             warnings.warn(msg, category=UserWarning)
-            self.train()
 
-        if not self.BICScore:  # Means: if self.BICScore == None
-            k = len(self.m.parameters)  # parameters are represented as tuple, for documentation see gpf.Module
-            L = self.m.log_likelihood()
-            BIC = L - k / 2 * np.log(self.N)  # BIC score is the likelihood with penalization for the nr. of parameters
-            self.BICScore = BIC
         return self.BICScore
+
+    def log_marginal_likelihood(self, method="bic"):
+        method = method.lower()
+
+        if method in ["bic", "bic score", "bicscore"]:
+            if not self.BICScore:  # Means: if self.BICScore == None
+                k = len(self.m.parameters)  # parameters are represented as tuple, for documentation see gpf.Module
+                L = self.m.log_likelihood()
+                BIC = L - k / 2 * np.log(self.N)
+                self.BICScore = BIC
+
+            return self.BICScore
+
+        elif method in ["native", "nat", "gpflow"]:
+            return self.m.log_marginal_likelihood()
+
+        else:
+            raise ValueError("Incorrect method for log marginal likelihood calculation: {}"
+                             "Please use either 'bic' or 'native' (i.e. gpflow method)".format(method))
+
 
     def predict_f(self, predict_at: DataPoint, full_cov: bool = False,
                   full_output_cov: bool = False) -> MeanAndVariance:
@@ -135,7 +147,7 @@ class ContinuousModel(BNQDModel):
         # Plots the 95% confidence interval
         # TODO: figure out why the variance is so small
         plt.fill_between(x_samples, mean[:, 0] - 1.96 * np.sqrt(var[:, 0]), mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-                         color='green', alpha=0.2)
+                         color='green', alpha=0.2)  # 0.5
 
 
 class DiscontinuousModel(BNQDModel):
@@ -163,7 +175,7 @@ class DiscontinuousModel(BNQDModel):
         self.N = data[0][0].shape[0] + data[1][0].shape[0] # nr. of data points
         data_c, data_i = self.data
         self.m_c = GPR(data_c, self.kernel)
-        self.m_i = GPR(data_i, self.kernel)
+        self.m_i = GPR(data_i, copy.copy(self.kernel))
 
     def train(self, optimizer=optimizers.Scipy(), verbose=True):
         # function that the optimizer aims to minimize
@@ -232,6 +244,7 @@ class DiscontinuousModel(BNQDModel):
 ##### TEST STUFF #####
 ######################
 
+# TODO: figure out why different values for sigma either don't change the variance or cause a tensorflow error
 np.random.seed(1984)
 
 b = 0.0
@@ -276,3 +289,9 @@ m.train()
 m.plot()
 plt.show()
 #print("\ncontinuous model:\n\tBIC score: {}\n\tlog likelihood: {}".format(m.log_likelihood(), m.m.log_likelihood()))
+
+# TODO: look into tensorflow_probability
+# TODO: figure out the arguments for the log_likelihood() and log_marginal_likelihood() functions
+# TODO: figure out what the role of the priors is in the BayesianModel.log_marginal_likelihood() function
+# TODO: figure out where I can add simulated annealing
+
