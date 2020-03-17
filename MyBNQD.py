@@ -77,7 +77,7 @@ class ContinuousModel(BNQDModel):
         if len(data[0].shape) == 1:  # Checks if the input data is of rank 1 (i.e. vector)
             # Converts the input data of shape (N) to shape (N,1), to comply with tensorflow.matmul requirements
             x, y = data
-            self.data = (x[:, None], y[:, None])
+            self.data = (x.reshape(-1, 1), y.reshape(-1, 1))
 
         else:  # Assigns without changing the dimensions of the input data
             self.data = data
@@ -89,7 +89,7 @@ class ContinuousModel(BNQDModel):
         # function that the optimizer aims to minimize
         closure = lambda: -self.m.log_marginal_likelihood()
 
-        optimizer.minimize(closure, self.m.trainable_parameters, options=(dict(maxiter=self.MAX_OPT_ITER)))
+        optimizer.minimize(closure, self.m.trainable_variables, options=(dict(maxiter=self.MAX_OPT_ITER)))
         if verbose:
             gf.utilities.print_summary(self.m)
 
@@ -137,7 +137,7 @@ class ContinuousModel(BNQDModel):
         x_samples = np.linspace(min_x, max_x, n_samples)
 
         # finds the mean and variance for each element in x_samples
-        mean, var = self.predict_f(x_samples[:, None])
+        mean, var = self.predict_f(x_samples.reshape(-1, 1))
         if verbose:
             print("min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples shape: {}\nmean shape: {}\nvar shape: {}"
                   .format(min_x, min_x.shape, max_x, max_x.shape, x_samples.shape, mean.shape, var.shape))
@@ -165,7 +165,7 @@ class DiscontinuousModel(BNQDModel):
             # Converts the input data of shape (N) to shape (N,1), to comply with tensorflow.matmul requirements
             # The data is split between control and intervention data
             (x_c, y_c), (x_i, y_i) = data
-            self.data = ((x_c[:, None], y_c[:, None]), (x_i[:, None], y_i[:, None]))
+            self.data = ((x_c.reshape(-1, 1), y_c.reshape(-1, 1)), (x_i.reshape(-1, 1), y_i.reshape(-1, 1)))
 
         else:  # Assigns without changing the dimensions of the input data
             self.data = data
@@ -175,7 +175,7 @@ class DiscontinuousModel(BNQDModel):
         self.N = data[0][0].shape[0] + data[1][0].shape[0] # nr. of data points
         data_c, data_i = self.data
         self.m_c = GPR(data_c, self.kernel)
-        self.m_i = GPR(data_i, copy.copy(self.kernel))
+        self.m_i = GPR(data_i, self.kernel)
 
     def train(self, optimizer=optimizers.Scipy(), verbose=True):
         # function that the optimizer aims to minimize
@@ -208,15 +208,29 @@ class DiscontinuousModel(BNQDModel):
             self.BICScore = BIC
         return self.BICScore
 
-    def predict_f(self, predict_at: DataPoint, full_cov: bool = False,
-                  full_output_cov: bool = False) -> MeanAndVariance:
+    def predict_f(self, predict_at: DataPoint, use_control_model_at_intervention_point: bool = False,
+                  full_cov: bool = False, full_output_cov: bool = False) -> MeanAndVariance:
+        # TODO: make this work for non-sequential predict_at tensors
         print("predict_at shape: {}".format(predict_at.shape))
+
         predict_c = predict_at[predict_at[:, 0] < self.intv_point, :]
-        predict_i = predict_at[predict_at[:, 0] < self.intv_point, :]
-        print("predict_c shape: {}".format(predict_c.shape))
+        predict_i = predict_at[predict_at[:, 0] > self.intv_point, :]
+
+        print("predict_c shape: {}\tpredict_i shape: {}".format(predict_c.shape, predict_i.shape))
+
+        # predict the data point at the intervention point depending on which model is specified
+        if self.intv_point in predict_at:
+            print("intv point in samples")
+            if use_control_model_at_intervention_point:
+                predict_c += self.intv_point
+            else:
+                predict_i = self.intv_point + predict_i
+
         mean_c, var_c = self.m_c.predict_f(predict_c, full_cov, full_output_cov)
         mean_i, var_i = self.m_i.predict_f(predict_i, full_cov, full_output_cov)
+
         return tf.concat([mean_c, mean_i], 0), tf.concat([var_c, var_i], 0)
+        #return self.m_i.predict_f(predict_at, full_cov, full_output_cov)
 
     def plot(self, n_samples: int = 100, verbose: bool = True):
         # finds minimum and maximum x values
@@ -225,18 +239,29 @@ class DiscontinuousModel(BNQDModel):
 
         # creates n_samples data points between min_x and max_x
         x_samples = np.linspace(min_x, max_x, n_samples)
+        x_samples_c = x_samples[x_samples < self.intv_point] + self.intv_point
+        x_samples_i = self.intv_point + x_samples[x_samples > self.intv_point]
+
+        print("x_samples_c shape: {}, x_samples_i shape: {}".format(x_samples_c.shape, x_samples_i.shape))
 
         # finds the mean and variance for each element in x_samples
-        mean, var = self.predict_f(x_samples[:, None])
+        mean_c, var_c = self.predict_f(x_samples_c.reshape(-1, 1), use_control_model_at_intervention_point = True)
+        mean_i, var_i = self.predict_f(x_samples_i.reshape(-1, 1), use_control_model_at_intervention_point = False)
         if verbose:
-            print("min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples shape: {}\nmean shape: {}\nvar shape: {}"
-                  .format(min_x, min_x.shape, max_x, max_x.shape, x_samples.shape, mean.shape, var.shape))
+            print("min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples_c shape: {}\nmean_c shape: {}\nvar_c shape: {}\n"
+                  "x_samples_c shape: {}\nmean_c shape: {}\nvar shape: {}"
+                  .format(min_x, min_x.shape, max_x, max_x.shape, x_samples_c.shape, mean_c.shape, var_c.shape,
+                          x_samples_i.shape, mean_i.shape, var_i.shape))
 
         # Plots the mean function predicted by the GP
-        plt.plot(x_samples, mean[:, 0], c='blue', label='$M_c$')
+        plt.plot(x_samples_c, mean_c[:, 0], c='blue', label='$M_c$')
+        plt.plot(x_samples_i, mean_i[:, 0], c='blue', label='$M_c$')
         # Plots the 95% confidence interval
         # TODO: figure out why the variance is SO BIG AFTER THE INTERVENTION POINT
-        plt.fill_between(x_samples, mean[:, 0] - 1.96 * np.sqrt(var[:, 0]), mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+        plt.fill_between(x_samples_c, mean_c[:, 0] - 1.96 * np.sqrt(var_c[:, 0]),
+                         mean_c[:, 0] + 1.96 * np.sqrt(var_c[:, 0]), color='blue', alpha=0.2)
+        plt.fill_between(x_samples_i, mean_i[:, 0] - 1.96 * np.sqrt(var_i[:, 0]),
+                         mean_i[:, 0] + 1.96 * np.sqrt(var_i[:, 0]),
                          color='blue', alpha=0.2)
 
 
@@ -247,11 +272,13 @@ class DiscontinuousModel(BNQDModel):
 # TODO: figure out why different values for sigma either don't change the variance or cause a tensorflow error
 np.random.seed(1984)
 
+#gf.reset_default_graph_and_session()
+
 b = 0.0
 n = 100
 x = np.linspace(-3, 3, n)
 f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + 1.0 * (x > b)
-sigma = 0.65
+sigma = 3
 y = np.random.normal(f, sigma, size=n)
 print(sigma)
 
@@ -272,13 +299,13 @@ if True:  # disables / enables plotting of the data points and generative functi
 ###### Kernel Options #####
 
 #k = Linear() + Constant() # "Linear" kernel
-k = Exponential()
-#k = SquaredExponential()
+#k = Exponential()
+k = SquaredExponential()
 #k = Periodic(SquaredExponential())
 #k = Cosine() + Constant()
 
 # Use the continuous model or discontinuous one
-useContinuous = 0
+useContinuous = 1
 
 m = None
 if useContinuous:
@@ -286,9 +313,14 @@ if useContinuous:
 else:
     m = DiscontinuousModel(((x_c, y_c), (x_i, y_i)), k, Gaussian(), ip)
 m.train()
-m.plot()
+m.plot(100)
 plt.show()
-#print("\ncontinuous model:\n\tBIC score: {}\n\tlog likelihood: {}".format(m.log_likelihood(), m.m.log_likelihood()))
+
+if useContinuous:
+    print("\ncontinuous model:\n\tBIC score: {}\n\tlog marginal likelihood: {}"
+          .format(m.log_marginal_likelihood("bic"), m.log_marginal_likelihood("native")))
+    print(m.m.trainable_variables)
+    print(m.m.trainable_parameters)
 
 # TODO: look into tensorflow_probability
 # TODO: figure out the arguments for the log_likelihood() and log_marginal_likelihood() functions
