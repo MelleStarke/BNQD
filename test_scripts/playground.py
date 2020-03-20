@@ -1,9 +1,7 @@
 #import BNQD
 #import gpflow as gpf
 import numpy as np
-import util
-import matplotlib.pyplot as plt
-#import tensorflow as tf
+import tensorflow as tf
 '''
 xs, ys = util.linear_dummy_data()
 cm = BNQD.ContinuousModel(xs, ys, gpf.kernels.Linear())
@@ -20,6 +18,21 @@ f = 0.8*np.sin(x) + 0.2*x**2 + 0.2*np.cos(x/4) + 1.0*(x>b)
 sigma = np.sqrt(1)
 y = np.random.normal(f, sigma, size=n)
 
-print("x: {}, shape: {}\nx[:,None]: {}, shape: {}".format(x, x.shape, x[:,None], x[:,None].shape))
+xc = tf.Variable([1, 2, 3])
+xi = tf.Variable([4, 5, 6])
+yc = tf.Variable([10, 20, 30])
+yi = tf.Variable([40, 50, 60])
+dc = (xc, yc)
+di = (xi, yi)
+
+res = tf.Variable([[], []])
+print(res)
+for d in [dc, di]:
+    res = tf.concat([res, d], 1)
+
+sum = tf.reduce_sum([dc, di], 0)
+
+print(res)
+print(sum)
 
 

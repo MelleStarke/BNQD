@@ -15,6 +15,7 @@ from scipy.linalg import block_diag
 from typing import Optional, Tuple
 
 from gpflow.models import GPModel
+from gpflow.models.model import MeanAndVariance
 from gpflow.kernels import Kernel
 from gpflow.logdensities import multivariate_normal
 from gpflow.mean_functions import MeanFunction
@@ -74,7 +75,7 @@ class DGPR(GPModel):
             log_prob += multivariate_normal(y, m, L)
         return tf.reduce_sum(log_prob)
 
-    def predict_f(self, predict_at: tf.Tensor, full_cov: bool = False, full_output_cov: bool = False):
+    def predict_f(self, predict_at: tf.Tensor, full_cov: bool = False, full_output_cov: bool = False) -> MeanAndVariance:
         r"""
         todo
         
@@ -119,7 +120,7 @@ b = 0.0
 n = 100
 x = np.linspace(-3, 3, n)
 f = 0.8*np.sin(x) + 0.2*x**2 + 0.2*np.cos(x/4) + 1.0*(x>b)
-sigma = 1
+sigma = 0.65
 y = np.random.normal(f, sigma, size=n)
 
 plt.figure()
