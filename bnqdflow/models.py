@@ -1,163 +1,51 @@
-import abc
 import numpy as np
-import tensorflow as tf
 import matplotlib.pyplot as plt
 import gpflow as gf
 import warnings
-import copy
-import sys
+import bnqdflow.util as util
 
-from typing import Optional, Tuple, Union, List, Callable, Any
+from abc import abstractmethod
+
+from bnqdflow.data_types import ContinuousData, DiscontinuousData
+
+from typing import Optional, Tuple, Union, List
 
 from numpy import ndarray
 
 from tensorflow import Tensor
 
 from gpflow import optimizers
-from gpflow.kernels import Kernel, Constant, Linear, Exponential, SquaredExponential, Periodic, Cosine
+from gpflow.kernels import Kernel
 from gpflow.models import GPModel, GPR
-from gpflow.likelihoods import Likelihood, Gaussian
-from gpflow.models.model import DataPoint, MeanAndVariance
+from gpflow.likelihoods import Likelihood
+from gpflow.models.model import DataPoint, MeanAndVariance, Data
 from gpflow.mean_functions import MeanFunction
-
-
-##################################
-###### Data Type Definitions #####
-##################################
-
-# Data for the continuous model: tuple of tensors / ndarrays
-ContinuousData = Tuple[Union[ndarray, Tensor], Union[ndarray, Tensor]]
-
-# Data for the discontinuous model: tuple of continuous data
-DiscontinuousData = List[ContinuousData]
-
-# Data for the abstract BNQD model: either continuous data or discontinuous data
-Data = Union[ContinuousData, DiscontinuousData]
 
 
 ##############################
 ###### Global Constants ######
 ##############################
 
+counter = 0
+
 MAX_OPTIMIZER_ITERATIONS = 100
 
 
-##############################
-###### Class Definitions #####
-##############################
-
-class BNQDAnalysis:
+class BaseGPRModel(GPModel):
     """
-    BNQD analysis object.
-    This contains both the continuous and the discontinuous model,
-    as well as some methods for manipulating and comparing these models.
-    """
-
-    def __init__(self, data: Data, kernel: Kernel, likelihood: Likelihood, intervention_point: Tensor,
-                 share_params: bool = False, marginal_likelihood_method: str = "bic", optimizer: Any = None, **kwargs):
-        """
-
-        :param data:
-                    Data object used to train the models. Either a tuple of tensors, or a list of tuples of tensors.
-        :param kernel:
-                    Kernel used by the models.
-        :param likelihood:
-                    Method for computing the likelihood over the data points. Currently not used, since GPR. objects
-                    create their own likelihood parameter (which is always Gaussian).
-        :param intervention_point:
-                    Point at which the effect size is measured, and where the discontinuous model changes sub-model.
-        :param share_params:
-                    Whether or not the discontinuous sub-models (control and intervention) share hyper parameters.
-        :param marginal_likelihood_method:
-                    Method used to compute the marginal likelihood. Can be either BIC-score or the native GPflow method.
-        :param optimizer:
-                    Optimizer used for estimating the hyper parameters.
-        :param kwargs:
-                    Additional optional parameters for the BayesianModel and GPModel classes. These include the
-                    mean_function: MeanFunction = None, and num_latent: int = 1
-        """
-
-        # TODO: make the class able to handle ContinuousData, and then split it using the intervention_point
-        self.continuous_model = ContinuousModel(flatten_data(data), kernel, **kwargs)
-        self.discontinuous_model = DiscontinuousModel(data, kernel, intervention_point, share_params, **kwargs)
-        self.optimizer = optimizer
-        self.marginal_likelihood_method = marginal_likelihood_method
-
-    def train(self, optimizer=None):
-        """
-        Trains both the continuous and the discontinuous model
-        """
-
-        # Uses the optimizer passed to the function, if not,
-        # then the optimizer assigned to the BNQDAnalysis object.
-        # Will only be None if both are None
-        optimizer = optimizer if optimizer else self.optimizer
-
-        # If neither the optimizer passed to the function, nor self.optimizer are None,
-        # use this optimizer to train the models
-        if optimizer:
-            self.continuous_model.train(optimizer)
-            self.discontinuous_model.train(optimizer)
-
-        # If both are none, train the models with the default optimizer
-        else:
-            self.continuous_model.train()
-            self.discontinuous_model.train()
-
-    def plot(self):
-        """
-        Plots both the continuous and the discontinuous model
-        """
-
-        # TODO: return a pyplot object instead to allow separate plotting
-        self.continuous_model.plot()
-        self.discontinuous_model.plot()
-        plt.show()  # <- ugly
-
-    def bayes_factor(self, method: str = None) -> tf.Tensor:
-        """
-        Computes the Bayes factor of the two models
-
-        :param method: Method used for calculating the marginal likelihood (BIC or the native GPflow method)
-        :return: Bayes factor of the discontinuous model to the continuous model: $BF_{M_D M_C}$
-        """
-
-        # Results in True if and only if both models are trained
-        if not all(map((lambda m: m.is_trained), [self.continuous_model, self.discontinuous_model])):
-            msg = "Not all models have been trained, so the Bayes factor will not be representative.\n"\
-                  "Assuming your BNQDAnalysis object is called 'ba', you can check this with:\n"\
-                  "\t'ba.continuous_model.is_trained' and 'ba.discontinuous_model.is_trained'\n"\
-                  "Train both models at the same time with 'ba.train()'"
-            warnings.warn(msg, category=UserWarning)
-
-        # Determines which marginal likelihood computation method to use.
-        # Uses the method passed to the function, if it exists. Otherwise, uses the method assigned to the object.
-        method = method if method else self.marginal_likelihood_method
-
-        # Computes the Bayes factor by subtracting the two tensors element-wise, on the first axis.
-        # Typically, these tensors will only contain one element.
-        bayes_factor = tf.reduce_sum([self.discontinuous_model.log_marginal_likelihood(method),
-                                      -self.continuous_model.log_marginal_likelihood(method)], 0)
-        print("Bayes factor M_D - M_C: {}".format(bayes_factor))
-        return bayes_factor
-
-
-class BNQDModel(GPModel):
-    """
-    Abstract BNQD model class.
+    Abstract GP regression model class.
     Inherits GPModel, which is an abstract class used for Bayesian prediction.
     """
 
-    def __init__(self, data: Data, kernel: Kernel, likelihood: Likelihood,
+    def __init__(self, data: Union[ContinuousData, DiscontinuousData], kernel: Kernel, likelihood: Likelihood,
                  mean_function: Optional[MeanFunction] = None, num_latent: int = 1):
-
         # TODO: figure out what a latent variable is in this context (num_latent)
         super().__init__(kernel, likelihood, mean_function, num_latent)
         self.data = data
         self.is_trained = False
         self.BIC_score = None
 
-    @abc.abstractmethod
+    @abstractmethod
     def train(self, optimizer=optimizers.Scipy(), verbose=True) -> None:
         # TODO: Make an optimizer wrapper that allows for easy specification of parameters for different optimizers
         raise NotImplementedError
@@ -169,12 +57,12 @@ class BNQDModel(GPModel):
                   full_output_cov: bool = False) -> MeanAndVariance:
         raise NotImplementedError
 
-    @abc.abstractmethod
+    @abstractmethod
     def plot(self, n_samples: int = 100):
         raise NotImplementedError
 
 
-class ContinuousModel(BNQDModel):
+class ContinuousModel(BaseGPRModel):
     """
     Continuous BNQD model
     """
@@ -297,7 +185,7 @@ class ContinuousModel(BNQDModel):
         return -self.model.log_likelihood()
 
 
-class DiscontinuousModel(BNQDModel):
+class DiscontinuousModel(BaseGPRModel):
     """
     Discontinuous BNQD model.
     """
@@ -309,11 +197,9 @@ class DiscontinuousModel(BNQDModel):
         # Checks if the input data is of rank 1 (i.e. vector)
         # Converts the input data of shape (N) to shape (N,1), to comply with tensorflow.matmul requirements
         # The data is split between control and intervention data, and is stored as a list of tuples of tensors
-        if len(data[0][0].shape) == 1:
-            res = list()
-            for x_vals, y_vals in data:
-                res.append((x_vals[:, None], y_vals[:, None]))
-            data = res
+        data = list(map(lambda section: (util.ensure_tf_vector_format(section[0]),
+                                         util.ensure_tf_vector_format(section[1])),
+                        data))
 
         # Cannot pass the likelihood and kernel to the superclass.
         # This is because discontinuous model contains two sub-models, with their own kernel and likelihood objects.
@@ -326,10 +212,10 @@ class DiscontinuousModel(BNQDModel):
         self.N = np.shape(data[0][0])[0] + np.shape(data[1][0])[0]  # nr. of data points
 
         # Model used before the intervention point
-        self.control_model = GPR(self.data[0], copy.deepcopy(kernel))
+        self.control_model = GPR(self.data[0], gf.utilities.deepcopy_components(kernel))
 
         # Model used after the intervention point
-        self.intervention_model = GPR(self.data[1], copy.deepcopy(kernel))
+        self.intervention_model = GPR(self.data[1], gf.utilities.deepcopy_components(kernel))
 
         # Sets all parameters in the intervention model as non-trainable, if the models share parameters
         if share_params:
@@ -351,16 +237,15 @@ class DiscontinuousModel(BNQDModel):
                            options=(dict(maxiter=MAX_OPTIMIZER_ITERATIONS)))
 
         if verbose:
-
             # Prints summaries of both models
             for name, model in [("Control", self.control_model), ("Intervention", self.intervention_model)]:
                 print("{} model:".format(name))
                 gf.utilities.print_summary(model)
-
+        '''
         if self.share_params:
             # Sets all trainable variables of the intervention model to be equal to the ones of the control model
             self.equalize_parameters()
-
+        '''
         self.is_trained = True
 
         # Ensures the BIC score is updated when trying to access it after training the model
@@ -405,62 +290,76 @@ class DiscontinuousModel(BNQDModel):
             raise ValueError("Incorrect method for log marginal likelihood calculation: {}"
                              "Please use either 'bic' or 'native' (i.e. gpflow method)".format(method))
 
-    def predict_f(self, predict_at: DataPoint, use_control_model_at_intervention_point: bool = False,
+    def predict_f(self, predict_at: List[Union[DataPoint, ndarray]], use_control_model_at_intervention_point: bool = False,
                   full_cov: bool = False, full_output_cov: bool = False) -> List[MeanAndVariance]:
         # TODO: make this work for non-sequential predict_at tensors
         # TODO: Change the code to output a list of MeanAndVariance, and override inherited functions
         #       (e.g. predict_y) to comply with this change
+        predict_at = list(map(util.ensure_tf_vector_format, predict_at))
+        res = list()
+        for model, section in zip([self.control_model, self.intervention_model], predict_at):
+            res.append(model.predict_f(section, full_cov, full_output_cov))
 
-        predict_c = predict_at[predict_at[:, 0] < self.intervention_point, :]
-        predict_i = predict_at[predict_at[:, 0] > self.intervention_point, :]
+        return res
 
-        # predict the data point at the intervention point depending on which model is specified
-        # TODO: remove this part cause it's ugly
-        if self.intervention_point in predict_at:
-            if use_control_model_at_intervention_point:
-                predict_c += self.intervention_point
-            else:
-                predict_i = self.intervention_point + predict_i
+    def predict_f_samples(self, predict_at: List[Union[DataPoint, ndarray]], num_samples: int = 1, full_cov: bool = True,
+                          full_output_cov: bool = True):
+        predict_at = list(map(util.ensure_tf_vector_format, predict_at))
+        res = list()
+        for model, section in zip([self.control_model, self.intervention_model], predict_at):
+            res.append(model.predict_f_samples(section, num_samples, full_cov, full_output_cov))
+        return res
 
-        mean_c, var_c = self.control_model.predict_f(predict_c, full_cov, full_output_cov)
-        mean_i, var_i = self.intervention_model.predict_f(predict_i, full_cov, full_output_cov)
+    def predict_y(self, predict_at: List[Union[DataPoint, ndarray]], full_cov: bool = False,
+                  full_output_cov: bool = False) -> List[MeanAndVariance]:
+        predict_at = list(map(util.ensure_tf_vector_format, predict_at))
+        res = list()
+        for model, section in zip([self.control_model, self.intervention_model], predict_at):
+            res.append(model.predict_y(section, full_cov, full_output_cov))
+        return res
 
-        return tf.concat([mean_c, mean_i], 0), tf.concat([var_c, var_i], 0)
-        #return self.intervention_model.predict_f(predict_at, full_cov, full_output_cov)
+    def predict_log_density(self, data: DiscontinuousData, full_cov: bool = False, full_output_cov: bool = False):
+        # TODO: check if I have to ensure the data is in the correct tensorflow format
+        res = list()
+        for model, section in zip([self.control_model, self.intervention_model], data):
+            res.append(model.predict_log_density(section, full_cov, full_output_cov))
+        return res
 
-    def plot(self, n_samples: int = 100, verbose: bool = False):
+    def plot(self, n_samples: int = 100, verbose: bool = True):
         # TODO: make this plotting function not so shitty
         # finds minimum and maximum x values
+
         x_vals = self.data[0][0] + self.data[1][0]
         min_x, max_x = (min(x_vals[:, 0]), max(x_vals[:, 0]))
+        ip = self.intervention_point
 
-        # creates n_samples data points between min_x and max_x
-        x_samples = np.linspace(min_x, max_x, n_samples)
-        x_samples_c = x_samples[x_samples < self.intervention_point] + self.intervention_point
-        x_samples_i = self.intervention_point + x_samples[x_samples > self.intervention_point]
+        # The following lines split the number of x samples into a number of control samples and intervention samples
+        # in such a way that they have the same "density", where n_c + n_i = n_samples + 1. The sum is 1 higher than
+        # n_samples because the intervention point should be present in both, basically meaning that it overlaps.
+        control_ratio, intervention_ratio = (ip - min_x) / (max_x - min_x), (max_x - ip) / (max_x - min_x)
+        # n_c is the number of x samples used to plot the control graph, idem for n_i and the intervention graph
+        n_c, n_i = n_samples * control_ratio + 1., n_samples * intervention_ratio + 1.
+        if n_c % 1 == 0:
+            n_c += -1.
+
+        x_samples_list = [np.linspace(min_x, ip, int(n_c))[:, None],
+                          np.linspace(ip, max_x, int(n_i))[:, None]]
+
+        # Predicts the means and variances for both x_samples
+        means_and_vars = self.predict_y(x_samples_list)
 
         if verbose:
-            print("x_samples_c shape: {}, x_samples_i shape: {}".format(x_samples_c.shape, x_samples_i.shape))
+            print(
+                "min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples_list shape: {}"
+                .format(min_x, min_x.shape, max_x, max_x.shape, np.shape(x_samples_list)))
 
-        # finds the mean and variance for each element in x_samples
-        mean_c, var_c = self.control_model.predict_y(x_samples_c[:, None])
-        mean_i, var_i = self.intervention_model.predict_y(x_samples_i[:, None])
-        if verbose:
-            print("min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples_c shape: {}\nmean_c shape: {}\nvar_c shape: {}\n"
-                  "x_samples_c shape: {}\nmean_c shape: {}\nvar shape: {}"
-                  .format(min_x, min_x.shape, max_x, max_x.shape, x_samples_c.shape, mean_c.shape, var_c.shape,
-                          x_samples_i.shape, mean_i.shape, var_i.shape))
-
-        # Plots the mean function predicted by the GP
-        plt.plot(x_samples_c, mean_c[:, 0], c='blue', label='$control_model$')
-        plt.plot(x_samples_i, mean_i[:, 0], c='blue', label='$control_model$')
-        # Plots the 95% confidence interval
-        # TODO: figure out why the variance is SO BIG AFTER THE INTERVENTION POINT
-        plt.fill_between(x_samples_c, mean_c[:, 0] - 1.96 * np.sqrt(var_c[:, 0]),
-                         mean_c[:, 0] + 1.96 * np.sqrt(var_c[:, 0]), color='blue', alpha=0.2)
-        plt.fill_between(x_samples_i, mean_i[:, 0] - 1.96 * np.sqrt(var_i[:, 0]),
-                         mean_i[:, 0] + 1.96 * np.sqrt(var_i[:, 0]),
-                         color='blue', alpha=0.2)
+        for x_samples, (mean, var) in zip(x_samples_list, means_and_vars):
+            # Plots the mean function predicted by the GP
+            plt.plot(x_samples[:, 0], mean[:, 0], c='blue', label='$control_model$')
+            # Plots the 95% confidence interval
+            # TODO: figure out why the variance is SO BIG AFTER THE INTERVENTION POINT
+            plt.fill_between(x_samples[:, 0], mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
+                             mean[:, 0] + 1.96 * np.sqrt(var[:, 0]), color='blue', alpha=0.2)
 
     def objective_closure(self):
         if self.share_params:
@@ -471,43 +370,7 @@ class DiscontinuousModel(BNQDModel):
     def equalize_parameters(self) -> None:
         """
         Sets the trainable parameters of the intervention model to be equal to the ones of the control model.
-        However, it assumes that all parameters occur in the same order in both models.
-        If both models are of the same class, and initialized with the same arguments, this shouldn't be an issue.
         """
 
-        for pc, pi in zip(self.control_model.parameters, self.intervention_model.parameters):
-            if pc.trainable:
-                # Assigns the value of the trainable parameter of the control model to the one of the intervention model
-                pi.assign(pc)
-
-
-##########################
-##### STATIC METHODS #####
-##########################
-
-
-def flatten_data(data):
-    """
-    Turns data fit for the discontinuous model into data fit for the continuous model.
-    :param data:
-    :return:
-    """
-    x_res, y_res = np.array([]), np.array([])
-    for x, y in data:
-        x_res = np.append(x_res, x)
-        y_res = np.append(y_res, y)
-    return (x_res, y_res)
-
-
-######################
-##### TEST STUFF #####
-######################
-
-
-# TODO: look into tensorflow_probability
-# TODO: figure out if (and where) the kernel parameter of GPModel is used (I guess nowhere)
-# TODO: figure out if I can do a print() or warn() when calling a parameter
-# TODO: figure out where I can add simulated annealing
-# TODO: figure out what num_latent means
-# TODO: add an effect size measure
-
+        params = gf.utilities.parameter_dict(self.control_model)
+        gf.utilities.multiple_assign(self.intervention_model, params)

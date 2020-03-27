@@ -5,6 +5,7 @@
       <module fileurl="file://$PROJECT_DIR$/../BNQD/.idea/BNQD.iml" filepath="$PROJECT_DIR$/../BNQD/.idea/BNQD.iml" />
       <module fileurl="file://$PROJECT_DIR$/../BNQD(GPy)/.idea/BNQD(GPy).iml" filepath="$PROJECT_DIR$/../BNQD(GPy)/.idea/BNQD(GPy).iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/BNQD-GPflow.iml" filepath="$PROJECT_DIR$/.idea/BNQD-GPflow.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../../Miniconda2/envs/py3.7/Lib/site-packages/gpflow/.idea/gpflow.iml" filepath="$PROJECT_DIR$/../../Miniconda2/envs/py3.7/Lib/site-packages/gpflow/.idea/gpflow.iml" />
     </modules>
   </component>
 </project>

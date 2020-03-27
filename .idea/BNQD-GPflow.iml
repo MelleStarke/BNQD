@@ -6,5 +6,6 @@
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="module" module-name="BNQD" />
     <orderEntry type="module" module-name="BNQD(GPy)" />
+    <orderEntry type="module" module-name="gpflow" />
   </component>
 </module>

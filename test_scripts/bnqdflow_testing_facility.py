@@ -1,4 +1,8 @@
 from bnqdflow import *
+import numpy as np
+import matplotlib.pyplot as plt
+
+from gpflow.kernels import Kernel, SquaredExponential, Constant, Linear, Periodic, Cosine
 
 np.random.seed(1984)
 
@@ -8,7 +12,7 @@ np.random.seed(1984)
 #############################
 
 SHOW_TRAINING_DATA = 1
-SHOW_UNDERLYING_FUNCTION = 1
+SHOW_UNDERLYING_FUNCTION = 0
 
 # Whether or not the sub-models of the discontinuous model use the same hyper parameters
 SHARE_PARAMS = 1
@@ -16,7 +20,7 @@ SHARE_PARAMS = 1
 # Tests for the continuous or discontinuous model individually
 TEST_INDIVIDUAL_MODELS = 0
 # Whether to use the continuous or discontinuous model for the individual test
-TEST_INDIVIDUAL_CONTINUOUS_MODEL = 1
+TEST_INDIVIDUAL_CONTINUOUS_MODEL = 0
 
 # Test for the full BNQDAnalysis object
 TEST_ANALYSIS = 1
@@ -29,10 +33,10 @@ TEST_ANALYSIS = 1
 ###### Test Dataset Parameters ######
 #####################################
 
-ip = 0  # Intervention point
-dc = 0.5  # Discontinuity
-sigma = 0.2  # Standard deviation
-n = 100  # Numer of data points
+ip = 0.  # Intervention point
+dc = 1.  # Discontinuity
+sigma = 0.1  # Standard deviation
+n = 10  # Number of data points
 
 
 ############################
@@ -88,9 +92,9 @@ if TEST_INDIVIDUAL_MODELS:
 
     m = None
     if TEST_INDIVIDUAL_CONTINUOUS_MODEL:
-        m = ContinuousModel((x, y), k)
+        m = models.ContinuousModel((x, y), k)
     else:
-        m = DiscontinuousModel([(x_c, y_c), (x_i, y_i)], k, Gaussian(), ip, share_params=True)
+        m = models.DiscontinuousModel([(x_c, y_c), (x_i, y_i)], k, ip, share_params=bool(SHARE_PARAMS))
 
     m.train()
     # Plot the mean and variance of the model (default = 100 x-value samples)
@@ -112,10 +116,14 @@ if TEST_ANALYSIS:
 
     # Full data
     d = [d_c, d_i]
-    a = BNQDAnalysis(d, k, Gaussian(), ip, share_params=bool(SHARE_PARAMS), marginal_likelihood_method='BIC')
+    a = analyses.SimpleAnalysis(d, k, ip, share_params=bool(SHARE_PARAMS), marginal_likelihood_method='BIC')
 
     a.train()
     a.plot()
-    bf = a.bayes_factor(method='bic')
+    bf = a.log_bayes_factor(method='bic', verbose=True)
+    e = a.get_effect_size(effect_size_measures.Sharp())
+    plt.plot(e['es_BMA'])
+    plt.plot(e['es_Disc'])
+    plt.show()
 
 plt.show()
