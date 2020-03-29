@@ -6,8 +6,13 @@ import tensorflow as tf
 import time
 import abc
 import gpflow
+import matplotlib.pyplot as plt
+import sys
 
-from bnqdflow.util import visitor
+from bnqdflow.util import visitor, Step
+
+import gpflow.mean_functions as mf
+from gpflow.kernels import RBF, Linear, Constant, Static, White
 
 import bnqdflow
 
@@ -25,10 +30,12 @@ cm.train()
 print(type(np.random.uniform(0, 10, size=(50,))))
 print(type(np.random.uniform(0, 10, size=50)))
 '''
-b = 0.0
+b = 10.
+ip = 0.0
 n = 100
+dc = 8.0
 x = np.linspace(-3, 3, n)
-f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + 1.0 * (x > b)
+f = b + 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)
 sigma = np.sqrt(1)
 y = np.random.normal(f, sigma, size=n)
 
@@ -56,13 +63,17 @@ class A2(A):
     pass
 
 
-class B:
+class B(abc.ABC):
     def __init__(self):
         self.type = 'B'
 
-    @abc.abstractmethod
+    @visitor(A1)
     def visit(self, a):
-        raise NotImplementedError
+        print("{} visited a1".format(self.__class__.__name__))
+
+    @visitor(A2)
+    def visit(self, a):
+        print("{} visited a2".format(self.__class__.__name__))
 
 
 class B1(B):
@@ -76,30 +87,40 @@ class B1(B):
         print("{} visited a2".format(self.__class__.__name__))
 
 
-
-a = A()
-a1 = A1()
-a2 = A2()
-b = B1()
-
-a1.accept(b)
-a2.accept(b)
-time.sleep(1)
-a.accept(b)
+class B2(B):
+    pass
 
 
 
-'''
-gpr = gpflow.models.GPR((x[:, None], y[:, None]), gpflow.kernels.SquaredExponential())
+
+
+
+k = RBF()# + gpflow.kernels.Constant()
+mean = Step(mf.Linear(), mf.Linear())
+gpr = gpflow.models.GPR((x[:, None], y[:, None]), k, mean_function=mean)
 opt = gpflow.optimizers.Scipy()
 
 def cl():
     return - gpr.log_likelihood()
-    
+
+print(tf.reshape(gpflow.base.Parameter([0]), (1, -1)))
+
+gpflow.utilities.print_summary(gpr)
+
 opt.minimize(cl, gpr.trainable_variables)
 
-print(gpr.predict_y(x_test))
-'''
+gpflow.utilities.print_summary(gpr)
+
+xs = np.linspace(-12, 12, 200)[:, None]
+ms, vs = gpr.predict_y(xs)
+
+plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
+
+plt.plot(xs[:, 0], ms[:, 0], c='blue', label='$control_model$')
+plt.fill_between(xs[:, 0], ms[:, 0] - 1.96 * np.sqrt(vs[:, 0]),
+                     ms[:, 0] + 1.96 * np.sqrt(vs[:, 0]), color='blue', alpha=0.2)
+plt.show()
+
 
 """
 Options this whole effect size distribution thingy:

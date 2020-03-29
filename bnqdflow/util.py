@@ -19,12 +19,14 @@ from gpflow import optimizers
 from gpflow.kernels import Kernel, Constant, Linear, Exponential, SquaredExponential, Periodic, Cosine
 from gpflow.models import GPModel, GPR
 from gpflow.likelihoods import Likelihood, Gaussian
-from gpflow.models.model import DataPoint, MeanAndVariance, Data
+from gpflow.models.model import InputData, MeanAndVariance
 from gpflow.mean_functions import MeanFunction
 
 
 def ensure_tf_vector_format(x: Union[Tensor, ndarray]):
     if len(np.shape(x)) == 1:
+        if np.shape(x)[0] == 0:
+            return np.empty(2)
         return x[:, None]
     if len(np.shape(x)) == 0:
         return np.array([[x]])
@@ -54,7 +56,7 @@ def flatten_data(data: DiscontinuousData) -> ContinuousData:
     return tf.convert_to_tensor(x_res), tf.convert_to_tensor(y_res)
 
 
-def split_data(data: ContinuousData, criterion: Union[List[DataPoint], Callable[[DataPoint], int]]):
+def split_data(data: ContinuousData, criterion: Union[List[InputData], Callable[[InputData], int]]):
     raise NotImplementedError("Haven't implemented data splitting yet. Though you can manually format your data into "
                               "discontinuous data and use flatten_data()")
 
@@ -64,6 +66,26 @@ def linear_dummy_data(N=50, range=(0., 10.), a=3, b=0.7, noise=2, ip=5, dc=1.5):
     ys = np.array([np.random.normal(a * x + b + (ip if x > ip else 0), noise) for x in xs])
     return xs, ys
 
+
+class Step(MeanFunction):
+
+    def __init__(self, fst: MeanFunction, snd: MeanFunction, s=None):
+        super().__init__()
+        s = np.zeros(1) if s is None else s
+        #self.s = gpflow.base.Parameter(tf.squeeze(s))
+        self.s = s
+
+        assert isinstance(fst, MeanFunction)
+        self.fst = fst
+
+        assert isinstance(snd, MeanFunction)
+        self.snd = snd
+
+    def __call__(self, X):
+        cond = tf.math.less(X, tf.reshape(self.s, (1, -1)))
+        res = tf.where(cond, self.fst(X), self.snd(X))
+        print("cond: {}\n\nres: {}".format(cond, res))
+        return res
 
 ###### Visitor Pattern Stuff ######
 """

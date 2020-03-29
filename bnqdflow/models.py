@@ -18,7 +18,7 @@ from gpflow import optimizers
 from gpflow.kernels import Kernel
 from gpflow.models import GPModel, GPR
 from gpflow.likelihoods import Likelihood
-from gpflow.models.model import DataPoint, MeanAndVariance, Data
+from gpflow.models.model import InputData, MeanAndVariance
 from gpflow.mean_functions import MeanFunction
 
 
@@ -53,7 +53,7 @@ class BaseGPRModel(GPModel):
     def log_likelihood(self, *args, **kwargs) -> Tensor:
         raise NotImplementedError
 
-    def predict_f(self, predict_at: DataPoint, full_cov: bool = False,
+    def predict_f(self, Xnew: InputData, full_cov: bool = False,
                   full_output_cov: bool = False) -> MeanAndVariance:
         raise NotImplementedError
 
@@ -143,17 +143,17 @@ class ContinuousModel(BaseGPRModel):
             raise ValueError("Incorrect method for log marginal likelihood calculation: {}"
                              "Please use either 'bic' or 'native' (i.e. gpflow method)".format(method))
 
-    def predict_f(self, predict_at: DataPoint, full_cov: bool = False,
+    def predict_f(self, Xnew: InputData, full_cov: bool = False,
                   full_output_cov: bool = False) -> MeanAndVariance:
         """
         Computes the mean and variance of the latent function.
-        :param predict_at:
+        :param Xnew:
         :param full_cov:
         :param full_output_cov:
         :return: Mean and variance of the latent function.
         """
 
-        return self.model.predict_f(predict_at, full_cov, full_output_cov)
+        return self.model.predict_f(Xnew, full_cov, full_output_cov)
 
     def plot(self, n_samples: int = 100, verbose: bool = False) -> None:
         # finds minimum and maximum x values
@@ -212,10 +212,10 @@ class DiscontinuousModel(BaseGPRModel):
         self.N = np.shape(data[0][0])[0] + np.shape(data[1][0])[0]  # nr. of data points
 
         # Model used before the intervention point
-        self.control_model = GPR(self.data[0], gf.utilities.deepcopy_components(kernel))
+        self.control_model = GPR(self.data[0], gf.utilities.deepcopy(kernel))
 
         # Model used after the intervention point
-        self.intervention_model = GPR(self.data[1], gf.utilities.deepcopy_components(kernel))
+        self.intervention_model = GPR(self.data[1], gf.utilities.deepcopy(kernel))
 
         # Sets all parameters in the intervention model as non-trainable, if the models share parameters
         if share_params:
@@ -290,31 +290,31 @@ class DiscontinuousModel(BaseGPRModel):
             raise ValueError("Incorrect method for log marginal likelihood calculation: {}"
                              "Please use either 'bic' or 'native' (i.e. gpflow method)".format(method))
 
-    def predict_f(self, predict_at: List[Union[DataPoint, ndarray]], use_control_model_at_intervention_point: bool = False,
+    def predict_f(self, Xnew: List[Union[InputData, ndarray]], use_control_model_at_intervention_point: bool = False,
                   full_cov: bool = False, full_output_cov: bool = False) -> List[MeanAndVariance]:
-        # TODO: make this work for non-sequential predict_at tensors
+        # TODO: make this work for non-sequential Xnew tensors
         # TODO: Change the code to output a list of MeanAndVariance, and override inherited functions
         #       (e.g. predict_y) to comply with this change
-        predict_at = list(map(util.ensure_tf_vector_format, predict_at))
+        Xnew = list(map(util.ensure_tf_vector_format, Xnew))
         res = list()
-        for model, section in zip([self.control_model, self.intervention_model], predict_at):
+        for model, section in zip([self.control_model, self.intervention_model], Xnew):
             res.append(model.predict_f(section, full_cov, full_output_cov))
 
         return res
 
-    def predict_f_samples(self, predict_at: List[Union[DataPoint, ndarray]], num_samples: int = 1, full_cov: bool = True,
+    def predict_f_samples(self, Xnew: List[Union[InputData, ndarray]], num_samples: int = 1, full_cov: bool = True,
                           full_output_cov: bool = True):
-        predict_at = list(map(util.ensure_tf_vector_format, predict_at))
+        Xnew = list(map(util.ensure_tf_vector_format, Xnew))
         res = list()
-        for model, section in zip([self.control_model, self.intervention_model], predict_at):
+        for model, section in zip([self.control_model, self.intervention_model], Xnew):
             res.append(model.predict_f_samples(section, num_samples, full_cov, full_output_cov))
         return res
 
-    def predict_y(self, predict_at: List[Union[DataPoint, ndarray]], full_cov: bool = False,
+    def predict_y(self, Xnew: List[Union[InputData, ndarray]], full_cov: bool = False,
                   full_output_cov: bool = False) -> List[MeanAndVariance]:
-        predict_at = list(map(util.ensure_tf_vector_format, predict_at))
+        Xnew = list(map(util.ensure_tf_vector_format, Xnew))
         res = list()
-        for model, section in zip([self.control_model, self.intervention_model], predict_at):
+        for model, section in zip([self.control_model, self.intervention_model], Xnew):
             res.append(model.predict_y(section, full_cov, full_output_cov))
         return res
 
@@ -372,5 +372,12 @@ class DiscontinuousModel(BaseGPRModel):
         Sets the trainable parameters of the intervention model to be equal to the ones of the control model.
         """
 
-        params = gf.utilities.parameter_dict(self.control_model)
-        gf.utilities.multiple_assign(self.intervention_model, params)
+        old_method = 0
+
+        if old_method:
+            for p_c, p_i in zip(self.control_model.parameters, self.intervention_model.parameters):
+                if p_c.trainable:
+                    p_i.assign(p_c)
+        else:
+            params = gf.utilities.parameter_dict(self.control_model)
+            gf.utilities.multiple_assign(self.intervention_model, params)

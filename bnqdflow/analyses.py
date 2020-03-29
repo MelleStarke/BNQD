@@ -9,7 +9,7 @@ from typing import Union, List, Callable, Any
 from tensorflow import Tensor
 
 from gpflow.kernels import Kernel
-from gpflow.models.model import DataPoint
+from gpflow.models.model import InputData
 
 from bnqdflow import util
 from bnqdflow.models import (ContinuousModel,
@@ -92,7 +92,7 @@ class SimpleAnalysis(Analysis):
 
         self.kernel = kernel
 
-    def init_models(self, labeler: Union[List[DataPoint], Callable[[DataPoint], int]] = None, **kwargs) -> None:
+    def init_models(self, labeler: Union[List[InputData], Callable[[InputData], int]] = None, **kwargs) -> None:
         """
         Initializes the continuous and discontinuous model.
         Uses the continuous_data and discontinuous_data fields if they exist, and attempts to generate it if otherwise.
@@ -102,7 +102,7 @@ class SimpleAnalysis(Analysis):
         point belongs to the control model or intervention model.
         If no labeler is specified, splitting is done on the intervention point.
 
-        :param labeler: either a list of data points, or a function of type DataPoint -> int
+        :param labeler: either a list of data points, or a function of type InputData -> int
         """
 
         if self.continuous_data is None:
@@ -116,6 +116,7 @@ class SimpleAnalysis(Analysis):
             if labeler is None:
                 warnings.warn("No labeler was specified. Splitting data at the intervention point",
                               category=UserWarning)
+                # TODO: test this automatic splitting function
                 self.discontinuous_data = util.split_data(self.continuous_data,
                                                           lambda x: int(x > self.intervention_point))
             else:

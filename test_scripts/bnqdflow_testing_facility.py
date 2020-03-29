@@ -2,7 +2,7 @@ from bnqdflow import *
 import numpy as np
 import matplotlib.pyplot as plt
 
-from gpflow.kernels import Kernel, SquaredExponential, Constant, Linear, Periodic, Cosine
+from gpflow.kernels import Kernel, SquaredExponential, Constant, Linear, Periodic, Cosine, Exponential
 
 np.random.seed(1984)
 
@@ -34,9 +34,9 @@ TEST_ANALYSIS = 1
 #####################################
 
 ip = 0.  # Intervention point
-dc = 1.  # Discontinuity
-sigma = 0.1  # Standard deviation
-n = 10  # Number of data points
+dc = 30.  # Discontinuity
+sigma = 4  # Standard deviation
+n = 100  # Number of data points
 
 
 ############################
@@ -55,7 +55,7 @@ k = SquaredExponential()
 ###########################################
 
 x = np.linspace(-3, 3, n)  # Evenly distributed x values
-f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
+f = 10 + 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
 y = np.random.normal(f, sigma, size=n)  # y values as the underlying function + noise
 
 # Data used by the control model (pre-intervention)
@@ -121,9 +121,29 @@ if TEST_ANALYSIS:
     a.train()
     a.plot()
     bf = a.log_bayes_factor(method='bic', verbose=True)
-    e = a.get_effect_size(effect_size_measures.Sharp())
+    '''e = a.get_effect_size(effect_size_measures.Sharp())
     plt.plot(e['es_BMA'])
-    plt.plot(e['es_Disc'])
+    plt.plot(e['es_Disc'])'''
+
+    '''
+    cm = a.continuous_model.model
+    dm = a.discontinuous_model
+    dcm = a.discontinuous_model.control_model
+    dim = a.discontinuous_model.intervention_model
+    x1, x2 = dcm.data[0], dim.data[0]
+    print("x1: {}, {}\nx2: {}, {}".format(min(x1), max(x1), min(x2), max(x2)))
+    print("l cm: {}\nl dcm: {}\nl dim: {}".format(cm.log_marginal_likelihood(), dcm.log_marginal_likelihood(), dim.log_marginal_likelihood()))
+    print(np.shape([]))
+
+    xs = np.linspace(-12, 12, 200)[:, None]
+    ms, vs = dim.predict_y(xs)
+    #plt.ylim((-5, 16))
+    plt.plot(xs[:, 0], ms[:, 0], c='blue', label='$control_model$')
+    # Plots the 95% confidence interval
+    # TODO: figure out why the variance is SO BIG AFTER THE INTERVENTION POINT
+    plt.fill_between(xs[:, 0], ms[:, 0] - 1.96 * np.sqrt(vs[:, 0]),
+                     ms[:, 0] + 1.96 * np.sqrt(vs[:, 0]), color='blue', alpha=0.2)
     plt.show()
+    '''
 
 plt.show()
