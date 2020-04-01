@@ -3,16 +3,19 @@ import matplotlib.pyplot as plt
 import gpflow as gf
 import warnings
 import bnqdflow.util as util
+import tensorflow as tf
 
 from abc import abstractmethod
 
 from bnqdflow.data_types import ContinuousData, DiscontinuousData
 
-from typing import Optional, Tuple, Union, List
+from typing import Optional, Tuple, Union, List, Any
 
 from numpy import ndarray
 
 from tensorflow import Tensor
+
+from itertools import cycle
 
 from gpflow import optimizers
 from gpflow.kernels import Kernel
@@ -21,7 +24,6 @@ from gpflow.likelihoods import Likelihood
 from gpflow.models.model import InputData, MeanAndVariance
 from gpflow.mean_functions import MeanFunction
 
-
 ##############################
 ###### Global Constants ######
 ##############################
@@ -29,64 +31,32 @@ from gpflow.mean_functions import MeanFunction
 counter = 0
 
 MAX_OPTIMIZER_ITERATIONS = 100
+N_MODELS = 2  # Nr. of sub-models in the discontinuous model
 
 
-class BaseGPRModel(GPModel):
+class BNQDRegressionModel(GPModel):
     """
-    Abstract GP regression model class.
+    Abstract BNQD GP regression model.
     Inherits GPModel, which is an abstract class used for Bayesian prediction.
     """
-
-    def __init__(self, data: Union[ContinuousData, DiscontinuousData], kernel: Kernel, likelihood: Likelihood,
-                 mean_function: Optional[MeanFunction] = None, num_latent: int = 1):
+    def __init__(
+            self,
+            kernel: Kernel,
+            likelihood: Likelihood,
+            mean_function: Optional[MeanFunction] = None,
+            num_latent_gps: Optional[int] = 1
+    ):
         # TODO: figure out what a latent variable is in this context (num_latent)
-        super().__init__(kernel, likelihood, mean_function, num_latent)
-        self.data = data
+        super().__init__(kernel, likelihood, mean_function, num_latent_gps)
         self.is_trained = False
-        self.BIC_score = None
 
-    @abstractmethod
-    def train(self, optimizer=optimizers.Scipy(), verbose=True) -> None:
-        # TODO: Make an optimizer wrapper that allows for easy specification of parameters for different optimizers
-        raise NotImplementedError
-
-    def log_likelihood(self, *args, **kwargs) -> Tensor:
-        raise NotImplementedError
-
-    def predict_f(self, Xnew: InputData, full_cov: bool = False,
-                  full_output_cov: bool = False) -> MeanAndVariance:
-        raise NotImplementedError
-
-    @abstractmethod
-    def plot(self, n_samples: int = 100):
-        raise NotImplementedError
-
-
-class ContinuousModel(BaseGPRModel):
-    """
-    Continuous BNQD model
-    """
-
-    def __init__(self, data: ContinuousData, kernel: Kernel, **kwargs):
-
-        # TODO: check if this data set shape stuff actually works
-        # Checks if the input data is of rank 1 (i.e. vector)
-        if len(data[0].shape) == 1:
-            # Converts the input data of shape (N) to shape (N,1), to comply with tensorflow.matmul requirements
-            x, y = data
-            data = (x[:, None], y[:, None])
-
-        self.N = data[0].shape[0]  # nr. of data points
-        self.model = GPR(data, kernel)  # Single GP regression model
-        super().__init__(data, self.model.kernel, self.model.likelihood, **kwargs)
-
-    def train(self, optimizer=optimizers.Scipy(), verbose=True) -> None:
+    def train(self, optimizer: Any = optimizers.Scipy(), verbose=True) -> None:
         """
-        Trains the GPR
-        :param optimizer: Optimizer used to estimate the optimal hyper parameters
-        :param verbose: Whether or not it should print a summary of the model after training
-        """
+        Trains the model.
 
+        :param optimizer: Optimizer used for estimation of the optimal hyper parameters.
+        :param verbose: Prints the model's summary if true.
+        """
         # Uses the optimizer to minimize the objective_closure function, by adjusting the trainable variables.
         # The trainable variables are obtained by recursively finding fields of type Variable,
         # if and only if they're defined as being trainable.
@@ -94,243 +64,395 @@ class ContinuousModel(BaseGPRModel):
                            options=(dict(maxiter=MAX_OPTIMIZER_ITERATIONS)))
 
         if verbose:
-            print("Continuous model:")
-            # Prints a summary of the model
-            gf.utilities.print_summary(self.model)
+            gf.utilities.print_summary(self)
 
         self.is_trained = True
-
-        # Ensures the BIC score is updated when trying to access it after training the model
-        self.BIC_score = None
-
-    def log_likelihood(self, *args, **kwargs) -> Tensor:
-        """
-        Returns the log likelihood of the GPR model
-        :param args:
-        :param kwargs:
-        :return: Log likelihood of the BNQD model
-        """
-
-        if not self.is_trained:
-            # Prints a warning if the model hasn't been trained.
-            msg = "The model hasn't been trained yet. Please use the ContinuousModel.train() function"
-            warnings.warn(msg, category=UserWarning)
-        return self.model.log_likelihood()
-
-    def log_marginal_likelihood(self, method="bic"):
-        """
-        Computes (if non-existent) and returns the log marginal likelihood of the GPR model.
-        This is done via one of two methods: using the BIC score, or with GPflow's native implementation.
-        :param method:
-        :return:
-        """
-
-        method = method.lower()
-
-        if method in ["bic", "bic score", "BIC_score"]:
-            if not self.BIC_score:  # Means: if self.BIC_score == None
-                # Parameters are represented as tuple, for documentation see gpf.Module
-                k = len(self.trainable_parameters)
-                L = self.log_likelihood()
-                BIC = L - k / 2 * np.log(self.N)
-                self.BIC_score = BIC
-            return self.BIC_score
-
-        elif method in ["native", "nat", "gpflow"]:
-            return self.model.log_marginal_likelihood()
-
-        else:
-            raise ValueError("Incorrect method for log marginal likelihood calculation: {}"
-                             "Please use either 'bic' or 'native' (i.e. gpflow method)".format(method))
-
-    def predict_f(self, Xnew: InputData, full_cov: bool = False,
-                  full_output_cov: bool = False) -> MeanAndVariance:
-        """
-        Computes the mean and variance of the latent function.
-        :param Xnew:
-        :param full_cov:
-        :param full_output_cov:
-        :return: Mean and variance of the latent function.
-        """
-
-        return self.model.predict_f(Xnew, full_cov, full_output_cov)
-
-    def plot(self, n_samples: int = 100, verbose: bool = False) -> None:
-        # finds minimum and maximum x values
-        x_vals = self.data[0]
-        min_x, max_x = (min(x_vals[:, 0]), max(x_vals[:, 0]))
-
-        # creates n_samples data points between min_x and max_x
-        x_samples = np.linspace(min_x, max_x, n_samples)
-
-        # finds the mean and variance for each element in x_samples
-        mean, var = self.predict_y(x_samples[:, None])
-        if verbose:
-            print("min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples shape: {}\nmean shape: {}\nvar shape: {}"
-                  .format(min_x, min_x.shape, max_x, max_x.shape, x_samples.shape, mean.shape, var.shape))
-
-        # Plots the mean function predicted by the GP
-        plt.plot(x_samples, mean, c='green', label='$continuous_model$')
-
-        # Plots the 95% confidence interval
-        plt.fill_between(x_samples, mean[:, 0] - 1.96 * np.sqrt(var[:, 0]), mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
-                         color='green', alpha=0.2)  # 0.5
 
     def objective_closure(self) -> Tensor:
         """
         Function that the optimizer aims to minimize.
-        :return: The negative log likelihood of the GPR model
+        :return: Negative log likelihood of the BNQD regression model.
         """
+        return -self.log_likelihood()
 
-        return -self.model.log_likelihood()
+    @abstractmethod
+    def plot_regression(self, n_samples=100, num_f_samples=5, plot_data=True, predict_y=False):
+        """
+        Plots the regression.
+
+        :param plot_data: Plots the training data if true.
+        :param n_samples: Number og x-samples used for the plot.
+        :param num_f_samples: Number of samples of the latent function that are plotted.
+        :param predict_y: Plots the prediction of new data points if true.
+                          Plots the prediction of the latent function if otherwise.
+        """
+        raise NotImplementedError
 
 
-class DiscontinuousModel(BaseGPRModel):
+class ContinuousModel(BNQDRegressionModel):
     """
-    Discontinuous BNQD model.
+    Continuous GP regression model.
     """
-
-    def __init__(self, data: DiscontinuousData, kernel: Kernel, intervention_point: Tensor,
-                 share_params: bool = True, **kwargs):
-
+    def __init__(
+            self,
+            data: ContinuousData,
+            model_or_kernel: Union[GPModel, Kernel],
+            mean_function: Optional[MeanFunction] = None,
+            num_latent_gps: Optional[int] = 1
+    ):
+        """
+        :param data: Training data of type bnqdflow.data_types.ContinuousData
+        :param model_or_kernel: Model or kernel object used for regression.
+                                If a kernel is passed, a GPR object will be used.
+        :param mean_function: Mean function used for the regression.
+        :param num_latent_gps: Number of latent Gaussian processes.
+        """
         # TODO: check if this data set shape stuff actually works
-        # Checks if the input data is of rank 1 (i.e. vector)
-        # Converts the input data of shape (N) to shape (N,1), to comply with tensorflow.matmul requirements
-        # The data is split between control and intervention data, and is stored as a list of tuples of tensors
-        data = list(map(lambda section: (util.ensure_tf_vector_format(section[0]),
-                                         util.ensure_tf_vector_format(section[1])),
-                        data))
+        self.data = tuple(map(util.ensure_tf_vector_format, data))
 
-        # Cannot pass the likelihood and kernel to the superclass.
-        # This is because discontinuous model contains two sub-models, with their own kernel and likelihood objects.
-        # And so far I haven't seen a way to create a new kernel and likelihood object that properly "splits"
-        # TODO: figure this out maybe?
-        super().__init__(data, None, None, **kwargs)
+        assert len(data) == 2, \
+            "The data should be a tuple in the shape of (x, y). i.e. gpflow.models.model.RegressionData"
+
+        self.N = data[0].shape[0]  # nr. of data points
+        if isinstance(model_or_kernel, Kernel):
+            self.model = GPR(self.data, model_or_kernel)
+        else:
+            self.model = model_or_kernel
+
+        super().__init__(self.model.kernel, self.model.likelihood, mean_function, num_latent_gps)
+
+    def log_likelihood(self, *args, **kwargs) -> Tensor:
+        """
+        Log likelihood of the continuous model.
+
+        :param args:
+        :param kwargs:
+        :return: Log likelihood of the continuous model.
+        """
+        return self.model.log_likelihood(*args, **kwargs)
+
+    def log_marginal_likelihood(self, method="bic", *args, **kwargs) -> Tensor:
+        """
+        Log marginal likelihood of the continuous model.
+        This is done via one of two methods: using the BIC score, or with GPflow's native implementation.
+
+        :param method: Method used for estimation of the log marginal likelihood. Either "bic" or "native"
+        :return: Log marginal likelihood of the discontinuous model.
+        """
+        method = method.lower()
+
+        if method in ["bic", "bic score", "BIC_score"]:
+            # Parameters are represented as tuple, for documentation see gpf.Module
+            k = len(self.trainable_parameters)
+            L = self.log_likelihood()
+            BIC = L - k / 2 * np.log(self.N)
+            return BIC
+
+        elif method in ["native", "nat", "gpflow"]:
+            return self.model.log_marginal_likelihood(*args, **kwargs)
+
+        else:
+            raise ValueError(f"Incorrect method for log marginal likelihood calculation: {method}. "
+                             "Please use either 'bic' or 'native' (i.e. gpflow method)")
+
+    def predict_f(self, Xnew: Union[InputData, ndarray], full_cov=False, full_output_cov=False) -> MeanAndVariance:
+        """
+        Computes the mean and variance of the posterior latent function at the input points.
+
+        :param Xnew: Input locations at which to compute the mean and variance
+        :param full_cov: whether or not to return the full covariance matrix of the latent function
+        :param full_output_cov:
+        :return: Mean and variance of the posterior latent function.
+        """
+        return self.model.predict_f(Xnew, full_cov, full_output_cov)
+
+    def plot_regression(self, n_samples=100, num_f_samples=5, plot_data=True, predict_y=False) -> None:
+        """
+        Plots the regression.
+
+        :param plot_data: Plots the training data if true.
+        :param n_samples: Number of x-samples used for the plot.
+        :param num_f_samples: Number of samples of the latent function that are plotted.
+        :param predict_y: Plots the prediction of new data points if true.
+                          Plots the prediction of the latent function otherwise.
+        """
+        # Temporary value fo adding margins to the sides of the regression. Shows the flared-out probability.
+        MARGIN = 1.3
+        col = 'green'
+
+        if plot_data:
+            # Plots the training data
+            x, y = self.data
+            plt.plot(x[:, None], y[:, None], linestyle='none', marker='x', color='k', label='obs')
+
+        # finds minimum and maximum x values
+        x_vals = self.data[0]
+        min_x, max_x = (min(x_vals[:, 0]) * MARGIN, max(x_vals[:, 0]) * MARGIN)
+
+        # creates n_samples data points between min_x and max_x
+        x_samples = np.linspace(min_x, max_x, n_samples)
+
+        # Uses either self.predict_y or self.predict_f depending on whether or not predict_y is True
+        predict = self.predict_y if predict_y else self.predict_f
+
+        # finds the mean and variance for each element in x_samples
+        mean, var = predict(x_samples[:, None])
+
+        # Plots the 95% confidence interval
+        plt.fill_between(x_samples, mean[:, 0] - 1.96 * np.sqrt(var[:, 0]), mean[:, 0] + 1.96 * np.sqrt(var[:, 0]),
+                         color=col, alpha=0.2)  # 0.5
+
+        # Plots the mean function predicted by the GP
+        plt.plot(x_samples, mean, c=col, label='$M_C$')
+
+        if num_f_samples > 0 and not predict_y:
+            # Plots samples of the latent function.
+            # Only if num_f_samples > 0 and the latent function is plotted instead of
+            # the prediction of held-out data points
+            f_samples = self.predict_f_samples(x_samples[:, None], num_f_samples)
+            for f_sample in f_samples:
+                plt.plot(x_samples, f_sample[:, 0], linewidth=0.2, c=col)
+
+
+class DiscontinuousModel(BNQDRegressionModel):
+    """
+    Discontinuous GP regression model.
+    """
+
+    def __init__(
+            self,
+            data: DiscontinuousData,
+            model_or_kernel: Union[GPModel, Kernel],
+            intervention_point: Tensor,
+            share_params: bool = True,
+            mean_function: MeanFunction = None,
+            num_latent_gps: int = 1
+    ):
+        """
+        :param data: Training data of type bnqdflow.data_types.ContinuousData
+        :param model_or_kernel: Model or kernel object used for regression.
+                                If a kernel is passed, a GPR object will be used.
+        :param intervention_point: Input point at which to switch sub-models
+        :param share_params: Whether or not the sub models have the same hyper parameters.
+        :param mean_function: Mean function used for the regression.
+        :param num_latent_gps: Number of latent Gaussian processes.
+        """
+        # TODO: check if this data set shape stuff actually works
+        # Converts the input data to comply with tensorflow.matmul requirements. The data is split between control and
+        # intervention data, and is stored as a list of tuples of tensors
+        self.data = list(map(lambda section: tuple(map(util.ensure_tf_vector_format, section)), data))
+
+        assert all(map(lambda section: len(section) == 2, self.data)), \
+            "The data should be list of tuples in the shape of (x, y). i.e. List[gpflow.models.model.RegressionData]"
 
         self.share_params = share_params
         self.intervention_point = intervention_point
         self.N = np.shape(data[0][0])[0] + np.shape(data[1][0])[0]  # nr. of data points
 
-        # Model used before the intervention point
-        self.control_model = GPR(self.data[0], gf.utilities.deepcopy(kernel))
+        self.models = list()
+        # Checks of the argument is a Kernel or GPModel
+        if isinstance(model_or_kernel, Kernel):
+            # Initializes the models as standard GPR objects, with the same kernel and mean_function objects
+            for i in range(N_MODELS):
+                self.models.append(GPR(self.data[i], model_or_kernel, mean_function, num_latent_gps))
 
-        # Model used after the intervention point
-        self.intervention_model = GPR(self.data[1], gf.utilities.deepcopy(kernel))
+        else:  # If it's a GPModel
+            # Initializes the models as deep copies of the provided model
+            for i in range(N_MODELS):
+                self.models.append(gf.utilities.deepcopy(model_or_kernel))
 
-        # Sets all parameters in the intervention model as non-trainable, if the models share parameters
-        if share_params:
-            for p in self.intervention_model.trainable_parameters:
-                gf.utilities.set_trainable(p, False)
-
-    def train(self, optimizer=optimizers.Scipy(), verbose=True):
-        """
-        Trains both sub-models
-        :param optimizer:
-        :param verbose:
-        :return:
-        """
-
-        # Uses the optimizer to minimize the objective_closure function, by adjusting the trainable variables.
-        # The trainable variables are obtained by recursively finding fields of type Variable,
-        # if and only if they're defined as being trainable.
-        optimizer.minimize(self.objective_closure, self.trainable_variables,
-                           options=(dict(maxiter=MAX_OPTIMIZER_ITERATIONS)))
-
-        if verbose:
-            # Prints summaries of both models
-            for name, model in [("Control", self.control_model), ("Intervention", self.intervention_model)]:
-                print("{} model:".format(name))
-                gf.utilities.print_summary(model)
-        '''
         if self.share_params:
-            # Sets all trainable variables of the intervention model to be equal to the ones of the control model
-            self.equalize_parameters()
-        '''
-        self.is_trained = True
+            # Makes all models use the same Kernel and Likelihood objects
+            for i in range(1, N_MODELS):
+                self.models[i].kernel = self.models[0].kernel
+                self.models[i].likelihood = self.models[0].likelihood
+                self.models[i].mean_function = self.models[0].mean_function
+        else:
+            # Ensures the Kernels of the models are different objects if a Kernel was provided instead of a GPModel
+            if isinstance(model_or_kernel, Kernel):
+                for i in range(N_MODELS):
+                    self.models[i].kernel = gf.utilities.deepcopy(model_or_kernel)
+                    if not (mean_function is None):
+                        self.models[i].mean_function = gf.utilities.deepcopy(mean_function)
 
-        # Ensures the BIC score is updated when trying to access it after training the model
-        self.BIC_score = None
+        if self.share_params:
+            super().__init__(self.models[0].kernel, self.models[0].likelihood, mean_function, num_latent_gps)
+        else:
+            # Cannot pass the likelihood and kernel to the superclass.
+            # This is because discontinuous model contains two sub-models, with their own kernel and likelihood objects.
+            # And so far I haven't seen a way to create a new kernel and likelihood object that properly "splits"
+            # TODO: figure this out maybe?
+            super().__init__(None, None, mean_function=None, num_latent_gps=num_latent_gps)
+
+    @property
+    def control_model(self):
+        return self.models[0]
+
+    @property
+    def intervention_model(self):
+        return self.models[1]
+
+    def old_equal_params(self):
+        """
+        Old method of sharing the hyper parameters between the control and intervention model.
+        """
+        control_params = gf.utilities.parameter_dict(self.control_model)
+        intervention_params = gf.utilities.parameter_dict(self.intervention_model)
+        new_params = {k1: (v1+v2)/2 for (k1, v1), (k2, v2) in zip(control_params.items(), intervention_params.items())}
+        gf.utilities.multiple_assign(self.control_model, new_params)
+        gf.utilities.multiple_assign(self.intervention_model, new_params)
 
     def log_likelihood(self, *args, **kwargs) -> Tensor:
         """
-        Returns the log likelihood as the sum of the log likelihoods of the sub-models
+        Log likelihood of the discontinuous model. Computed as the sum of all sub-models' log likelihoods.
+
         :param args:
         :param kwargs:
-        :return: Log likelihood of the BNQD model
+        :return: Log likelihood of the discontinuous model.
         """
+        return tf.reduce_sum(list(map(lambda m: m.log_likelihood(), self.models)))
 
-        if not self.is_trained:
-            # Prints a warning if the model hasn't been trained.
-            msg = "The model hasn't been trained yet. Please use the DiscontinuousModel.train() function"
-            warnings.warn(msg, category=UserWarning)
-        return self.control_model.log_likelihood() + self.intervention_model.log_likelihood()
-
-    def log_marginal_likelihood(self, method="bic"):
+    def log_marginal_likelihood(self, method="bic", *args, **kwargs) -> Tensor:
         """
-        Computes (if non-existent) and returns the log marginal likelihood of the GPR model.
+        Log marginal likelihood of the discontinuous model.
         This is done via one of two methods: using the BIC score, or with GPflow's native implementation.
-        :param method:
-        :return:
+        If using the native implementation, sums the marginal likelihoods of all sub-models.
+
+        :param method: Method used for estimation of the log marginal likelihood. Either "bic" or "native"
+        :return: Log marginal likelihood of the discontinuous model.
         """
 
         method = method.lower()
 
         if method in ["bic", "bic score", "BIC_score"]:
-            if not self.BIC_score:  # Means: if self.BIC_score == None
-                k = len(self.trainable_variables)
-                L = self.log_likelihood()
-                BIC = L - k / 2 * np.log(self.N)
-                self.BIC_score = BIC
-            return self.BIC_score
+            k = len(self.trainable_variables)
+            L = self.log_likelihood()
+            BIC = L - k / 2 * np.log(self.N)
+            return BIC
 
         elif method in ["native", "nat", "gpflow"]:
-            return self.control_model.log_marginal_likelihood() + self.intervention_model.log_marginal_likelihood()
+            # Sums all log marginal likelihood of the sub-models.
+            return tf.reduce_sum(list(map(lambda m: m.log_marginal_likelihood(*args, **kwargs), self.models)))
 
         else:
             raise ValueError("Incorrect method for log marginal likelihood calculation: {}"
                              "Please use either 'bic' or 'native' (i.e. gpflow method)".format(method))
 
-    def predict_f(self, Xnew: List[Union[InputData, ndarray]], use_control_model_at_intervention_point: bool = False,
-                  full_cov: bool = False, full_output_cov: bool = False) -> List[MeanAndVariance]:
-        # TODO: make this work for non-sequential Xnew tensors
-        # TODO: Change the code to output a list of MeanAndVariance, and override inherited functions
-        #       (e.g. predict_y) to comply with this change
+    def predict_f(self, Xnew: List[Union[InputData, ndarray]], full_cov=False, full_output_cov=False) -> List[MeanAndVariance]:
+        """
+        Computes the means and variances of the posterior latent functions of the sub models at the input points.
+
+        :param Xnew: List of input locations at which to compute the means and variances.
+        :param full_cov: whether or not to return the full covariance matrices of the latent functions.
+        :param full_output_cov:
+        :return: List of means and variances of the posterior latent functions.
+        """
+        assert len(Xnew) is len(self.models), \
+            "The number of elements in Xnew should be the same as the number of sub-models. " \
+            "Each element in the list of input data is predicted by one model each."
+
         Xnew = list(map(util.ensure_tf_vector_format, Xnew))
+
         res = list()
-        for model, section in zip([self.control_model, self.intervention_model], Xnew):
+        for model, section in zip(self.models, Xnew):
             res.append(model.predict_f(section, full_cov, full_output_cov))
 
         return res
 
-    def predict_f_samples(self, Xnew: List[Union[InputData, ndarray]], num_samples: int = 1, full_cov: bool = True,
-                          full_output_cov: bool = True):
+    def predict_f_samples(self, Xnew: List[Union[InputData, ndarray]], num_samples: Optional[int] = None,
+                          full_cov: bool = True, full_output_cov: bool = False) -> List[Tensor]:
+        """
+        Produce samples from the posterior latent function(s) at the input points.
+
+        :param Xnew: List of input locations at which to draw samples.
+        :param num_samples: Number of samples to draw.
+        :param full_cov: If True, draw correlated samples over the inputs. If False, draw samples that are uncorrelated
+                         over the inputs.
+        :param full_output_cov: If True, draw correlated samples over the outputs. If False, draw samples that are
+                                uncorrelated over the outputs.
+        :return: List of samples.
+        """
+        assert len(Xnew) is len(self.models), \
+            "The number of elements in Xnew should be the same as the number of sub-models. " \
+            "Each element in the list of input data is predicted by one model each."
+
         Xnew = list(map(util.ensure_tf_vector_format, Xnew))
+
         res = list()
-        for model, section in zip([self.control_model, self.intervention_model], Xnew):
+        for model, section in zip(self.models, Xnew):
             res.append(model.predict_f_samples(section, num_samples, full_cov, full_output_cov))
+
         return res
 
     def predict_y(self, Xnew: List[Union[InputData, ndarray]], full_cov: bool = False,
                   full_output_cov: bool = False) -> List[MeanAndVariance]:
+        """
+        Compute the mean and variance of the held-out data at the input points.
+
+        :param Xnew: List of input locations at which to compute the means and variances.
+        :param full_cov: whether or not to return the full covariance matrices of the latent functions.
+        :param full_output_cov:
+        :return: List of means and variances of the held-out data points.
+        """
+        assert len(Xnew) is len(self.models), \
+            "The number of elements in Xnew should be the same as the number of sub-models. " \
+            "Each element in the list of input data is predicted by one model each."
+
         Xnew = list(map(util.ensure_tf_vector_format, Xnew))
+
         res = list()
         for model, section in zip([self.control_model, self.intervention_model], Xnew):
             res.append(model.predict_y(section, full_cov, full_output_cov))
+
         return res
 
     def predict_log_density(self, data: DiscontinuousData, full_cov: bool = False, full_output_cov: bool = False):
-        # TODO: check if I have to ensure the data is in the correct tensorflow format
+        """
+        Compute the log densities of the data at the new data points.
+
+        :param data: List of RegressionData (i.e. tuples of shape (x, y)) for which to compute the log densities.
+        :param full_cov:
+        :param full_output_cov:
+        :return: List of predicted log densities.
+        """
+        assert len(data) is len(self.models), \
+            "The number of elements in Xnew should be the same as the number of sub-models. " \
+            "Each element in the list of input data is predicted by one model each."
+
         res = list()
         for model, section in zip([self.control_model, self.intervention_model], data):
             res.append(model.predict_log_density(section, full_cov, full_output_cov))
+
         return res
 
-    def plot(self, n_samples: int = 100, verbose: bool = True):
-        # TODO: make this plotting function not so shitty
-        # finds minimum and maximum x values
+    def plot_regression(self, n_samples=100, num_f_samples=5, plot_data=True, predict_y=False):
+        """
+        Plots the regressions of the sub-models.
 
-        x_vals = self.data[0][0] + self.data[1][0]
-        min_x, max_x = (min(x_vals[:, 0]), max(x_vals[:, 0]))
+        :param plot_data: Plots the training data if true.
+        :param n_samples: Number of x-samples used for the plot.
+        :param num_f_samples: Number of samples of the latent function that are plotted.
+        :param predict_y: Plots the prediction of new data points if true.
+                          Plots the prediction of the latent function otherwise.
+        """
+        # TODO: make this plotting function not so shitty
+
+        # Temporary value fo adding margins to the sides of the regression. Shows the flared-out probability.
+        MARGIN = 1.3
+        col = 'blue'
+        markers = ['x', '+', '.', '*', 'd', 'v', 's', 'p', 'X', 'P', 'h']
+
+        # Plots the vertical intervention point line
+        plt.axvline(x=self.intervention_point, linestyle='--', c='k')
+
+        if plot_data:
+            # Plots the training data
+            for i, ((x, y), m) in enumerate(zip(self.data, cycle(markers))):
+                plt.plot(x[:, 0], y[:, 0], linestyle='none', marker=m, color='k', label=f'$obs_{i}$')
+
+        # Finds minimum and maximum x values
+        x_vals = tf.concat(list(map(lambda section: section[0], self.data)), 0)
+        min_x, max_x = (min(x_vals[:, 0]) * MARGIN, max(x_vals[:, 0]) * MARGIN)
         ip = self.intervention_point
 
         # The following lines split the number of x samples into a number of control samples and intervention samples
@@ -345,39 +467,31 @@ class DiscontinuousModel(BaseGPRModel):
         x_samples_list = [np.linspace(min_x, ip, int(n_c))[:, None],
                           np.linspace(ip, max_x, int(n_i))[:, None]]
 
-        # Predicts the means and variances for both x_samples
-        means_and_vars = self.predict_y(x_samples_list)
+        # Uses either self.predict_y or self.predict_f depending on whether or not predict_y is True
+        predict = self.predict_y if predict_y else self.predict_f
 
-        if verbose:
-            print(
-                "min_x: {}\tshape: {}\nmax_x: {}\tshape: {}\nx_samples_list shape: {}"
-                .format(min_x, min_x.shape, max_x, max_x.shape, np.shape(x_samples_list)))
+        # Predicts the means and variances for both x_samples
+        means_and_vars = predict(x_samples_list)
+
+        # Quick fix to ensure only a single label occurs in the pyplot legend
+        # TODO: make this more elegant
+        labeled = False
 
         for x_samples, (mean, var) in zip(x_samples_list, means_and_vars):
-            # Plots the mean function predicted by the GP
-            plt.plot(x_samples[:, 0], mean[:, 0], c='blue', label='$control_model$')
             # Plots the 95% confidence interval
-            # TODO: figure out why the variance is SO BIG AFTER THE INTERVENTION POINT
             plt.fill_between(x_samples[:, 0], mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-                             mean[:, 0] + 1.96 * np.sqrt(var[:, 0]), color='blue', alpha=0.2)
+                             mean[:, 0] + 1.96 * np.sqrt(var[:, 0]), color=col, alpha=0.2)
 
-    def objective_closure(self):
-        if self.share_params:
-            self.equalize_parameters()
+            # Plots the mean function predicted by the GP
+            plt.plot(x_samples[:, 0], mean[:, 0], c=col, label=('$M_D$' if not labeled else ""))
+            labeled = True
 
-        return -(self.control_model.log_likelihood() + self.intervention_model.log_likelihood())
+        if num_f_samples > 0 and not predict_y:
+            # Plots samples of the latent function.
+            # Only if num_f_samples > 0 and the latent function is plotted instead of
+            # the prediction of held-out data points
+            f_samples_list = self.predict_f_samples(x_samples_list, num_f_samples)
+            for f_samples, x_samples in zip(f_samples_list, x_samples_list):
+                for f_sample in f_samples:
+                    plt.plot(x_samples, f_sample[:, 0], linewidth=0.2, c=col)
 
-    def equalize_parameters(self) -> None:
-        """
-        Sets the trainable parameters of the intervention model to be equal to the ones of the control model.
-        """
-
-        old_method = 0
-
-        if old_method:
-            for p_c, p_i in zip(self.control_model.parameters, self.intervention_model.parameters):
-                if p_c.trainable:
-                    p_i.assign(p_c)
-        else:
-            params = gf.utilities.parameter_dict(self.control_model)
-            gf.utilities.multiple_assign(self.intervention_model, params)

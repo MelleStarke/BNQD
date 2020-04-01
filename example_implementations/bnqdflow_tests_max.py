@@ -51,7 +51,7 @@ class DGPR(GPModel):
                  noise_variance: float = 1.0):
         likelihood = gpflow.likelihoods.Gaussian(noise_variance)
         #_, y_data = data
-        super().__init__(kernel, likelihood, mean_function, num_latent=1)
+        super().__init__(kernel, likelihood, mean_function, num_latent_gps=1)
         self.data = data
 
     def log_likelihood(self):
@@ -89,7 +89,7 @@ class DGPR(GPModel):
             err = y_data - self.mean_function(x_data)
     
             kmm = self.kernel(x_data)
-            knn = self.kernel(predict_at[i], full=full_cov)
+            knn = self.kernel(predict_at[i], full_cov=full_cov)
             kmn = self.kernel(x_data, predict_at[i])
     
             num_data = x_data.shape[0]
@@ -120,7 +120,7 @@ b = 0.0
 n = 100
 x = np.linspace(-3, 3, n)
 f = 0.8*np.sin(x) + 0.2*x**2 + 0.2*np.cos(x/4) + 1.0*(x>b)
-sigma = 0.65
+sigma = 0.3
 y = np.random.normal(f, sigma, size=n)
 
 plt.figure()
@@ -132,18 +132,19 @@ plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
 
 # k = gpflow.kernels.Matern52()
 #k = gpflow.kernels.Exponential()
-# k = gpflow.kernels.SquaredExponential()
+#k = gpflow.kernels.SquaredExponential()
 k = gpflow.kernels.Linear() + gpflow.kernels.Constant()
+#k = gpflow.kernels.Cosine() + gpflow.kernels.Constant()
 Gaussian = gpflow.likelihoods.Gaussian()
 
-m0 = gpflow.models.GPR(data=(x[:,None], y[:,None]), kernel=k)
+m0 = gpflow.models.GPR(data=(x[:,None], y[:,None]), kernel=gpflow.utilities.deepcopy(k))
 
 opt = gpflow.optimizers.Scipy()
 
 def opt_fun_m0():
     return -m0.log_marginal_likelihood()
 
-opt_m0_logs = opt.minimize(opt_fun_m0, m0.trainable_parameters, options=dict(maxiter=100))
+opt_m0_logs = opt.minimize(opt_fun_m0, m0.trainable_variables, options=dict(maxiter=100))
 
 gpflow.utilities.print_summary(m0)
 
@@ -154,14 +155,14 @@ m0_mean, m0_var = m0.predict_f(xx[:,None])
 plt.plot(xx, m0_mean, c='green', label='$M_0$')
 plt.fill_between(xx, m0_mean[:,0] - 1.96*np.sqrt(m0_var[:,0]), m0_mean[:,0] + 1.96*np.sqrt(m0_var[:,0]), color='green', alpha=0.2)
 
-
-
 m1 = DGPR(data=((x[x<=b,None], y[x<=b,None]), (x[x>b, None], y[x>b,None])), kernel=k)
+
 
 def opt_fun_m1():
     return -m1.log_likelihood()
 
-opt_m1_logs = opt.minimize(opt_fun_m1, m1.trainable_parameters, options=dict(maxiter=100))
+
+opt_m1_logs = opt.minimize(opt_fun_m1, m1.trainable_variables, options=dict(maxiter=100))
 
 gpflow.utilities.print_summary(m1)
 

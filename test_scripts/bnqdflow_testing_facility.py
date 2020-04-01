@@ -1,3 +1,8 @@
+"""
+Script used for testing the implementation.
+Features some options to quickly manipulate the script.
+"""
+
 from bnqdflow import *
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,12 +23,16 @@ SHOW_UNDERLYING_FUNCTION = 0
 SHARE_PARAMS = 1
 
 # Tests for the continuous or discontinuous model individually
+# Note: haven't tested this bit in a while
 TEST_INDIVIDUAL_MODELS = 0
 # Whether to use the continuous or discontinuous model for the individual test
 TEST_INDIVIDUAL_CONTINUOUS_MODEL = 0
 
 # Test for the full BNQDAnalysis object
 TEST_ANALYSIS = 1
+
+# Method used for estimation of the marginal likelihood
+MAR_LIK_METHOD = "bic"
 
 # Function that worked in a previous version of GPflow to reset the cached TensorFlow graph
 #gf.reset_default_graph_and_session()
@@ -34,9 +43,10 @@ TEST_ANALYSIS = 1
 #####################################
 
 ip = 0.  # Intervention point
-dc = 30.  # Discontinuity
-sigma = 4  # Standard deviation
-n = 100  # Number of data points
+dc = .5  # Discontinuity
+sigma = 0.1  # Standard deviation
+sigma_d = 0.  # Value added to the standard deviation after the intervention point
+n = 20  # Number of data points
 
 
 ############################
@@ -55,8 +65,13 @@ k = SquaredExponential()
 ###########################################
 
 x = np.linspace(-3, 3, n)  # Evenly distributed x values
-f = 10 + 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
-y = np.random.normal(f, sigma, size=n)  # y values as the underlying function + noise
+
+# Latent function options
+f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
+y = np.random.normal(f, sigma + sigma_d * (x > ip), size=n)  # y values as the underlying function + noise
+
+# Uncomment to flip the data along the y-axis
+#y = np.flip(y)
 
 # Data used by the control model (pre-intervention)
 x_c = x[x <= ip]
@@ -67,14 +82,16 @@ x_i = x[x > ip]
 y_i = y[x > ip]
 
 
-plt.figure()
+plt.figure(dpi=300)
+
 if SHOW_UNDERLYING_FUNCTION:
     plt.plot(x[x <= ip], f[x <= ip], label='True f', c='k')
     plt.plot(x[x >= ip], f[x >= ip], c='k')
+'''
 plt.axvline(x=ip, linestyle='--', c='k')  # Vertical intervention point line
 if SHOW_TRAINING_DATA:
     plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
-
+'''
 
 ###########################
 ###### Testing Stuff ######
@@ -98,7 +115,8 @@ if TEST_INDIVIDUAL_MODELS:
 
     m.train()
     # Plot the mean and variance of the model (default = 100 x-value samples)
-    m.plot(100)
+    m.plot_regression(100)
+    plt.show()
 
     if TEST_INDIVIDUAL_CONTINUOUS_MODEL:
         print("\ncontinuous model:\n\tBIC score: {}\n\tnative log marginal likelihood: {}"
@@ -116,34 +134,29 @@ if TEST_ANALYSIS:
 
     # Full data
     d = [d_c, d_i]
-    a = analyses.SimpleAnalysis(d, k, ip, share_params=bool(SHARE_PARAMS), marginal_likelihood_method='BIC')
+    a = analyses.SimpleAnalysis(d, k, ip, share_params=bool(SHARE_PARAMS), marginal_likelihood_method=MAR_LIK_METHOD)
 
     a.train()
-    a.plot()
-    bf = a.log_bayes_factor(method='bic', verbose=True)
-    '''e = a.get_effect_size(effect_size_measures.Sharp())
-    plt.plot(e['es_BMA'])
-    plt.plot(e['es_Disc'])'''
+    a.plot_regressions()
+    plt.legend()
+    plt.show()
 
-    '''
+    bf = a.log_bayes_factor(verbose=True)
+
+    e = a.get_effect_size(effect_size_measures.Sharp())
+
+    plt.figure()
+    plt.title("Effect size")
+    x_range = e['es_range']
+    plt.plot(x_range, e['es_BMA'], label='BMA')
+    plt.plot(x_range, e['es_Disc'], label='Discontinuous effect size estimate')
+    plt.legend()
+    plt.show()
+
     cm = a.continuous_model.model
     dm = a.discontinuous_model
     dcm = a.discontinuous_model.control_model
     dim = a.discontinuous_model.intervention_model
-    x1, x2 = dcm.data[0], dim.data[0]
-    print("x1: {}, {}\nx2: {}, {}".format(min(x1), max(x1), min(x2), max(x2)))
-    print("l cm: {}\nl dcm: {}\nl dim: {}".format(cm.log_marginal_likelihood(), dcm.log_marginal_likelihood(), dim.log_marginal_likelihood()))
-    print(np.shape([]))
-
-    xs = np.linspace(-12, 12, 200)[:, None]
-    ms, vs = dim.predict_y(xs)
-    #plt.ylim((-5, 16))
-    plt.plot(xs[:, 0], ms[:, 0], c='blue', label='$control_model$')
-    # Plots the 95% confidence interval
-    # TODO: figure out why the variance is SO BIG AFTER THE INTERVENTION POINT
-    plt.fill_between(xs[:, 0], ms[:, 0] - 1.96 * np.sqrt(vs[:, 0]),
-                     ms[:, 0] + 1.96 * np.sqrt(vs[:, 0]), color='blue', alpha=0.2)
-    plt.show()
-    '''
-
-plt.show()
+    print("log marginal likelihoods:\n\tcontinuous model: {}\n\tdiscontinuous control model: {}\n"
+          "\tdiscontinuous intervention model: {}"
+          .format(cm.log_marginal_likelihood(), dcm.log_marginal_likelihood(), dim.log_marginal_likelihood()))

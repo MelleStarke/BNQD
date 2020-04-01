@@ -9,18 +9,38 @@ from bnqdflow.util import visitor
 
 
 class EffectSizeMeasure(ABC):
-
+    """
+    Abstract effect size measure class.
+    Allows for the use of different effect size measures, while still being able to share methods and fields.
+    """
     def __init__(self):
         self.effect_size = None
 
     @abstractmethod
     def calculate_effect_size(self, analysis) -> None:
+        """
+        Abstract effect size measure calculation method.
+        This should be used as part of a visitor pattern by all implementations of the EffectSizeMeasure class.
+        Implementation of the visitor pattern is done via the bnqdflow.util.visitor decorator.
+
+        :param analysis: Analysis object used as a source for all information required to calculate the effect size.
+                         Also used for the visitor patterns implementation.
+        :return:
+        """
         raise NotImplementedError
 
 
 class Sharp(EffectSizeMeasure):
-
-    def __init__(self, n_samples: int = 100, n_mc_samples: int = 500):
+    """
+    Sharp effect size measure object.
+    Calculates the effect size while assuming there is a discrete separation between the data used by the sub-models of
+    the discontinuous model.
+    """
+    def __init__(self, n_samples: int = 300, n_mc_samples: int = 500):
+        """
+        :param n_samples: Number of x-samples used for the effect size distribution.
+        :param n_mc_samples: Number of Monte Carlo samples for the BMA density estimate.
+        """
         super().__init__()
         self.n_samples = n_samples
         self.n_mc_samples = n_mc_samples
@@ -32,27 +52,51 @@ class Sharp(EffectSizeMeasure):
 
     @visitor(SimpleAnalysis)
     def calculate_effect_size(self, analysis: SimpleAnalysis) -> None:
+        """Computes the effect size at the boundary b. The BMA of the effect
+        size is approximated using Monte Carlo sampling and Gaussian kernel
+        density estimation.
+
+        Note that this measure of effect size applies only to zeroth-order
+        discontinuities, i.e. regression discontinuity.
+
+        :return: Returns a dictionary containing
+        - the effect size estimate by the discontinuous model as a pdf
+        - the effect size estimate by the discontinuous model as summary
+        statistics
+        - The BMA effect size estimate.
+        - The two-step p-value (i.e. frequentist p-value given the effect size
+        distribution by the discontinuous model).
+        - The range over which the effect size distribution is given, used for
+        plotting.
+        - The mean predictions at b.
+        - The normalization from standardized effect size to the scale of the
+        data.
+        """
         ip = analysis.intervention_point
+
+        # Means and variances of the two sub-models of the discontinuous model.
         (m0b, v0b), (m1b, v1b) = analysis.discontinuous_model.predict_y([ip, ip])
 
-        dict_mean_diff = np.squeeze(m1b - m0b)  # TODO: why was this swapped around?
+        # Mean and standard dev differences. Used to calculate the discontinuous model's effect size estimate.
+        disc_mean_diff = np.squeeze(m1b - m0b)  # TODO: why was this swapped around?
         disc_std_diff = tf.sqrt(tf.squeeze(v0b + v1b))
 
-        if dict_mean_diff < 0:
-            pval = 1 - stats.norm.cdf(x=0, loc=dict_mean_diff, scale=disc_std_diff)
+        if disc_mean_diff < 0:
+            pval = 1 - stats.norm.cdf(x=0, loc=disc_mean_diff, scale=disc_std_diff)
         else:
-            pval = stats.norm.cdf(x=0, loc=dict_mean_diff, scale=disc_std_diff)
+            pval = stats.norm.cdf(x=0, loc=disc_mean_diff, scale=disc_std_diff)
 
-        xmin, xmax = (np.min([dict_mean_diff - 4 * disc_std_diff, -0.1 * disc_std_diff]),
-                      np.max([dict_mean_diff + 4 * disc_std_diff, 0.1 * disc_std_diff]))
+        xmin, xmax = (np.min([disc_mean_diff - 4 * disc_std_diff, -0.1 * disc_std_diff]),
+                      np.max([disc_mean_diff + 4 * disc_std_diff, 0.1 * disc_std_diff]))
 
-        n = 300
-        xrange = np.linspace(xmin, xmax, n)
-        y = stats.norm.pdf(xrange, dict_mean_diff, disc_std_diff)
+        xrange = np.linspace(xmin, xmax, self.n_samples)
+
+        # Effect size estimate by the discontinuous model as a pdf
+        y = stats.norm.pdf(xrange, disc_mean_diff, disc_std_diff)
 
         samples = np.zeros((self.n_mc_samples))
         nspike = int(np.round(analysis.posterior_model_probabilities()[0] * self.n_mc_samples))
-        samples[nspike:] = np.random.normal(loc=dict_mean_diff,
+        samples[nspike:] = np.random.normal(loc=disc_mean_diff,
                                             scale=disc_std_diff,
                                             size=(self.n_mc_samples - nspike))
 
@@ -63,7 +107,7 @@ class Sharp(EffectSizeMeasure):
             if nspike == self.n_mc_samples:
                 # BMA dominated by continuous model
                 # Put all mass at xrange closest to b
-                d_bma = np.zeros((n))
+                d_bma = np.zeros((self.n_samples))
                 xdelta = xrange[1] - xrange[0]
                 ix = np.argmin((xrange - ip) ** 2)
                 d_bma[ix] = 1.0 / xdelta
@@ -76,13 +120,28 @@ class Sharp(EffectSizeMeasure):
                                              bw_method='silverman')
                 d_bma = kde_fit(xrange)
 
-        self.effect_size = {'es_BMA': d_bma,
-                            'es_Disc': y,
-                            'es_disc_stats': (dict_mean_diff, disc_std_diff),
-                            'pval': pval,
-                            'es_range': xrange,
-                            'f(b)': (m0b, m1b),
-                            'es_transform': lambda z: z * disc_std_diff + dict_mean_diff}
+        self.effect_size = {
+            # Estimated Bayesian model average
+            'es_BMA': d_bma,
+
+            # Estimated effect size by the discontinuous model
+            'es_Disc': y,
+
+            # Difference in mean and standard deviation of the two sub-models of the discontinuous model.
+            'es_disc_stats': (disc_mean_diff, disc_std_diff),
+
+            # Two-step p-value for the discontinuous model.
+            'pval': pval,
+
+            # Range over which the effect size distribution is given. Used for plotting
+            'es_range': xrange,
+
+            # Mean predictions at the intervention point by the sub-models of the discontinuous model.
+            'f(b)': (m0b, m1b),
+
+            # Normalization from the standard effect size to the scale of the data.
+            'es_transform': lambda z: z * disc_std_diff + disc_mean_diff
+        }
 
     @visitor(PlaceholderAnalysis)
     def calculate_effect_size(self, analysis: PlaceholderAnalysis) -> None:

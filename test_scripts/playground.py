@@ -1,6 +1,11 @@
+"""
+Script for messing around with the implementation, 3rd party libraries, and Python in general.
+Not meant for exhaustive testing of the implementation.
+"""
+
 from __future__ import generators
 # import BNQD
-# import gpflow as gpf
+import gpflow as gf
 import numpy as np
 import tensorflow as tf
 import time
@@ -13,6 +18,7 @@ from bnqdflow.util import visitor, Step
 
 import gpflow.mean_functions as mf
 from gpflow.kernels import RBF, Linear, Constant, Static, White
+from gpflow.models import GPR
 
 import bnqdflow
 
@@ -30,21 +36,6 @@ cm.train()
 print(type(np.random.uniform(0, 10, size=(50,))))
 print(type(np.random.uniform(0, 10, size=50)))
 '''
-b = 10.
-ip = 0.0
-n = 100
-dc = 8.0
-x = np.linspace(-3, 3, n)
-f = b + 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)
-sigma = np.sqrt(1)
-y = np.random.normal(f, sigma, size=n)
-
-xc = tf.Variable([1, 2, 3])
-xi = tf.Variable([4, 5, 6])
-yc = tf.Variable([10, 20, 30])
-yi = tf.Variable([40, 50, 60])
-dc = (xc, yc)
-di = (xi, yi)
 
 
 class A:
@@ -93,35 +84,63 @@ class B2(B):
 
 
 
+b = 0.
+ip = 0.0
+n = 300
+dc = 0.0
+x = np.linspace(-5, 5, n)
+f = (b + 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc)
+f2 = 0
+sigma = 1
+y = np.random.normal(f2, sigma, size=n) + b
+
+xc = tf.Variable([1, 2, 3])
+xi = tf.Variable([4, 5, 6])
+yc = tf.Variable([10, 20, 30])
+yi = tf.Variable([40, 50, 60])
+dc = (xc, yc)
+di = (xi, yi)
+
+k1 = RBF()# + gpflow.kernels.Constant()
+k2 = RBF()#Linear() + Constant()
+m1 = GPR((x[:, None], y[:, None]), k1)
+m2 = GPR((x[:, None], y[:, None]), k2)
 
 
-k = RBF()# + gpflow.kernels.Constant()
-mean = Step(mf.Linear(), mf.Linear())
-gpr = gpflow.models.GPR((x[:, None], y[:, None]), k, mean_function=mean)
-opt = gpflow.optimizers.Scipy()
+class Container:
+    def __init__(self, m1, m2):
+        self.m1 = m1
+        self.m2 = m2
 
 def cl():
-    return - gpr.log_likelihood()
+    return -m1.log_likelihood()
+
+
+opt = gpflow.optimizers.Scipy()
+
+opt.minimize(cl, m1.trainable_variables)
+
+gf.utilities.print_summary(m1)
 
 print(tf.reshape(gpflow.base.Parameter([0]), (1, -1)))
 
-gpflow.utilities.print_summary(gpr)
-
-opt.minimize(cl, gpr.trainable_variables)
-
-gpflow.utilities.print_summary(gpr)
-
-xs = np.linspace(-12, 12, 200)[:, None]
-ms, vs = gpr.predict_y(xs)
+xs = np.linspace(-7, 7, 200)[:, None]
 
 plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
 
-plt.plot(xs[:, 0], ms[:, 0], c='blue', label='$control_model$')
-plt.fill_between(xs[:, 0], ms[:, 0] - 1.96 * np.sqrt(vs[:, 0]),
-                     ms[:, 0] + 1.96 * np.sqrt(vs[:, 0]), color='blue', alpha=0.2)
+ms, vs = m1.predict_f(xs)
+
+bnqdflow.util.plot_regression(xs[:, 0], ms[:, 0], vs[:, 0])
+
 plt.show()
 
+plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
 
+ms, vs = m1.predict_y(xs)
+
+bnqdflow.util.plot_regression(xs[:, 0], ms[:, 0], vs[:, 0])
+
+plt.show()
 """
 Options this whole effect size distribution thingy:
 Option 1:
