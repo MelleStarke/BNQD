@@ -113,7 +113,7 @@ class Container:
         self.m2 = m2
 
 def cl():
-    return -m1.log_likelihood()
+    return -m1.maximum_log_likelihood_objective()
 
 
 opt = gpflow.optimizers.Scipy()

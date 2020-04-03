@@ -60,7 +60,7 @@ class BNQDRegressionModel(GPModel):
         # Uses the optimizer to minimize the objective_closure function, by adjusting the trainable variables.
         # The trainable variables are obtained by recursively finding fields of type Variable,
         # if and only if they're defined as being trainable.
-        optimizer.minimize(self.objective_closure, self.trainable_variables,
+        optimizer.minimize(self._training_loss, self.trainable_variables,
                            options=(dict(maxiter=MAX_OPTIMIZER_ITERATIONS)))
 
         if verbose:
@@ -68,12 +68,17 @@ class BNQDRegressionModel(GPModel):
 
         self.is_trained = True
 
-    def objective_closure(self) -> Tensor:
+    '''
+    def __objective_closure(self) -> Tensor:
         """
+        NOTE: Not used since GPflow.models.BayesianModel now has a _training_loss() method specified
+
         Function that the optimizer aims to minimize.
+
         :return: Negative log likelihood of the BNQD regression model.
         """
-        return -self.log_likelihood()
+        return -self.maximum_log_likelihood_objective()
+    '''
 
     @abstractmethod
     def plot_regression(self, n_samples=100, num_f_samples=5, plot_data=True, predict_y=False):
@@ -121,7 +126,7 @@ class ContinuousModel(BNQDRegressionModel):
 
         super().__init__(self.model.kernel, self.model.likelihood, mean_function, num_latent_gps)
 
-    def log_likelihood(self, *args, **kwargs) -> Tensor:
+    def maximum_log_likelihood_objective(self, *args, **kwargs) -> Tensor:
         """
         Log likelihood of the continuous model.
 
@@ -129,9 +134,9 @@ class ContinuousModel(BNQDRegressionModel):
         :param kwargs:
         :return: Log likelihood of the continuous model.
         """
-        return self.model.log_likelihood(*args, **kwargs)
+        return self.model.maximum_log_likelihood_objective(*args, **kwargs)
 
-    def log_marginal_likelihood(self, method="bic", *args, **kwargs) -> Tensor:
+    def log_posterior_density(self, method="bic", *args, **kwargs) -> Tensor:
         """
         Log marginal likelihood of the continuous model.
         This is done via one of two methods: using the BIC score, or with GPflow's native implementation.
@@ -144,12 +149,12 @@ class ContinuousModel(BNQDRegressionModel):
         if method in ["bic", "bic score", "BIC_score"]:
             # Parameters are represented as tuple, for documentation see gpf.Module
             k = len(self.trainable_parameters)
-            L = self.log_likelihood()
+            L = self.maximum_log_likelihood_objective()
             BIC = L - k / 2 * np.log(self.N)
             return BIC
 
         elif method in ["native", "nat", "gpflow"]:
-            return self.model.log_marginal_likelihood(*args, **kwargs)
+            return self.model.log_posterior_density(*args, **kwargs)
 
         else:
             raise ValueError(f"Incorrect method for log marginal likelihood calculation: {method}. "
@@ -302,7 +307,7 @@ class DiscontinuousModel(BNQDRegressionModel):
         gf.utilities.multiple_assign(self.control_model, new_params)
         gf.utilities.multiple_assign(self.intervention_model, new_params)
 
-    def log_likelihood(self, *args, **kwargs) -> Tensor:
+    def maximum_log_likelihood_objective(self, *args, **kwargs) -> Tensor:
         """
         Log likelihood of the discontinuous model. Computed as the sum of all sub-models' log likelihoods.
 
@@ -310,9 +315,9 @@ class DiscontinuousModel(BNQDRegressionModel):
         :param kwargs:
         :return: Log likelihood of the discontinuous model.
         """
-        return tf.reduce_sum(list(map(lambda m: m.log_likelihood(), self.models)))
+        return tf.reduce_sum(list(map(lambda m: m.maximum_log_likelihood_objective(), self.models)))
 
-    def log_marginal_likelihood(self, method="bic", *args, **kwargs) -> Tensor:
+    def log_posterior_density(self, method="bic", *args, **kwargs) -> Tensor:
         """
         Log marginal likelihood of the discontinuous model.
         This is done via one of two methods: using the BIC score, or with GPflow's native implementation.
@@ -326,13 +331,13 @@ class DiscontinuousModel(BNQDRegressionModel):
 
         if method in ["bic", "bic score", "BIC_score"]:
             k = len(self.trainable_variables)
-            L = self.log_likelihood()
+            L = self.maximum_log_likelihood_objective()
             BIC = L - k / 2 * np.log(self.N)
             return BIC
 
         elif method in ["native", "nat", "gpflow"]:
             # Sums all log marginal likelihood of the sub-models.
-            return tf.reduce_sum(list(map(lambda m: m.log_marginal_likelihood(*args, **kwargs), self.models)))
+            return tf.reduce_sum(list(map(lambda m: m.log_posterior_density(*args, **kwargs), self.models)))
 
         else:
             raise ValueError("Incorrect method for log marginal likelihood calculation: {}"

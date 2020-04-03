@@ -120,11 +120,11 @@ if TEST_INDIVIDUAL_MODELS:
 
     if TEST_INDIVIDUAL_CONTINUOUS_MODEL:
         print("\ncontinuous model:\n\tBIC score: {}\n\tnative log marginal likelihood: {}"
-              .format(m.log_marginal_likelihood("bic"), m.log_marginal_likelihood("native")))
+              .format(m.log_posterior_density("bic"), m.log_posterior_density("native")))
 
     else:
         print("\ndiscontinuous model:\n\tBIC score: {}\n\tnative log marginal likelihood: {}"
-              .format(m.log_marginal_likelihood("bic"), m.log_marginal_likelihood("native")))
+              .format(m.log_posterior_density("bic"), m.log_posterior_density("native")))
 
 
 if TEST_ANALYSIS:
@@ -159,4 +159,4 @@ if TEST_ANALYSIS:
     dim = a.discontinuous_model.intervention_model
     print("log marginal likelihoods:\n\tcontinuous model: {}\n\tdiscontinuous control model: {}\n"
           "\tdiscontinuous intervention model: {}"
-          .format(cm.log_marginal_likelihood(), dcm.log_marginal_likelihood(), dim.log_marginal_likelihood()))
+          .format(cm.log_posterior_density(), dcm.log_posterior_density(), dim.log_posterior_density()))

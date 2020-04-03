@@ -220,8 +220,8 @@ class SimpleAnalysis(Analysis):
 
         # Computes the Bayes factor by subtracting the two tensors element-wise, on the first axis.
         # Typically, these tensors will only contain one element.
-        log_bf = tf.reduce_sum([self.discontinuous_model.log_marginal_likelihood(method),
-                                -self.continuous_model.log_marginal_likelihood(method)], 0)
+        log_bf = tf.reduce_sum([self.discontinuous_model.log_posterior_density(method),
+                                -self.continuous_model.log_posterior_density(method)], 0)
         if verbose:
             print("Bayes factor Md-Mc: {}".format(log_bf))
         return log_bf
