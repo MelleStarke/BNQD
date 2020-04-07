@@ -238,8 +238,8 @@ class SimpleAnalysis(Analysis):
         if tf.math.is_inf(bf):
             return 0.0, 1.0
         else:
-            cont_prob = bf / (1 + bf)
-            discont_prob = 1 - bf
+            discont_prob = bf / (1 + bf)
+            cont_prob = 1 - discont_prob
             return cont_prob, discont_prob
 
     def get_effect_size(self, measure=None, force_recalc: bool = False) -> dict:
