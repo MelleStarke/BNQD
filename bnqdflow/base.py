@@ -1,6 +1,4 @@
-from tensorflow import Tensor
-
-from numpy import ndarray
+from gpflow.models import GPModel
 
 from typing import List, Union, Tuple
 
@@ -12,3 +10,7 @@ ContinuousData = RegressionData #Tuple[Union[Tensor, ndarray], Union[Tensor, nda
 
 # Data for the discontinuous model: list of continuous data
 DiscontinuousData = List[ContinuousData]
+
+
+def IS_GPMODEL(o):
+    return isinstance(o, GPModel)

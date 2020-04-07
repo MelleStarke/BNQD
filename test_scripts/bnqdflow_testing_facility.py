@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 
 from gpflow.kernels import Kernel, SquaredExponential, Constant, Linear, Periodic, Cosine, Exponential
 
-np.random.seed(1984)
+np.random.seed(20)
 
 
 #############################
@@ -32,7 +32,7 @@ TEST_INDIVIDUAL_CONTINUOUS_MODEL = 0
 TEST_ANALYSIS = 1
 
 # Method used for estimation of the marginal likelihood
-MAR_LIK_METHOD = "bic"
+MAR_LIK_METHOD = "nat"
 
 # Function that worked in a previous version of GPflow to reset the cached TensorFlow graph
 #gf.reset_default_graph_and_session()
@@ -43,10 +43,10 @@ MAR_LIK_METHOD = "bic"
 #####################################
 
 ip = 0.  # Intervention point
-dc = .5  # Discontinuity
-sigma = 0.1  # Standard deviation
+dc = 1.0  # Discontinuity
+sigma = 0.5  # Standard deviation
 sigma_d = 0.  # Value added to the standard deviation after the intervention point
-n = 20  # Number of data points
+n = 51  # Number of data points
 
 
 ############################
@@ -64,7 +64,7 @@ k = SquaredExponential()
 ###### Generation of Test Dataset ######
 ###########################################
 
-x = np.linspace(-3, 3, n)  # Evenly distributed x values
+x = np.linspace(-3, 0.05, n)  # Evenly distributed x values
 
 # Latent function options
 f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
@@ -137,7 +137,7 @@ if TEST_ANALYSIS:
     a = analyses.SimpleAnalysis(d, k, ip, share_params=bool(SHARE_PARAMS), marginal_likelihood_method=MAR_LIK_METHOD)
 
     a.train()
-    a.plot_regressions()
+    a.plot_regressions(predict_y=False)
     plt.legend()
     plt.show()
 
@@ -159,4 +159,4 @@ if TEST_ANALYSIS:
     dim = a.discontinuous_model.intervention_model
     print("log marginal likelihoods:\n\tcontinuous model: {}\n\tdiscontinuous control model: {}\n"
           "\tdiscontinuous intervention model: {}"
-          .format(cm.log_posterior_density(), dcm.log_posterior_density(), dim.log_posterior_density()))
+          .format(cm.maximum_log_likelihood_objective(), dcm.maximum_log_likelihood_objective(), dim.maximum_log_likelihood_objective()))

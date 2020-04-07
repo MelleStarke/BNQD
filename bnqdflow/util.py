@@ -12,14 +12,14 @@ from numpy import ndarray
 
 from tensorflow import Tensor
 
-from bnqdflow.data_types import ContinuousData, DiscontinuousData
+from bnqdflow import ContinuousData, DiscontinuousData
 
 
 ###############################
 ###### Data Manipulation ######
 ###############################
 
-def ensure_tf_vector_format(x: Union[Tensor, ndarray]) -> Tensor:
+def ensure_tf_matrix(x: Union[Tensor, ndarray]) -> Tensor:
     """
     Ensures the input is in a shape usable by tensorflow.
     Meaning, an at least 2-dimensional tensor.
@@ -101,7 +101,7 @@ def plot_regression(x, mean, std, col="blue", alpha=0.2):
     :param alpha: Opacity of the bands
     :return:
     """
-    plt.plot(x, mean, c=col)
+    plt.plot(x, mean, c=col, alpha=2*alpha)
     plt.fill_between(x, mean - 1.96 * std, mean + 1.96 * std, color=col, alpha=alpha)
 
 

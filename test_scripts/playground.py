@@ -13,11 +13,16 @@ import abc
 import gpflow
 import matplotlib.pyplot as plt
 import sys
+from scipy.stats import norm
+import random
+
+from typing import List, Tuple
 
 from bnqdflow.util import visitor, Step
+from bnqdflow.models import GPMContainer, ContinuousModel, DiscontinuousModel
 
 import gpflow.mean_functions as mf
-from gpflow.kernels import RBF, Linear, Constant, Static, White
+from gpflow.kernels import RBF, Linear, Constant, Static, White, SquaredExponential
 from gpflow.models import GPR
 
 import bnqdflow
@@ -26,16 +31,6 @@ import random
 
 from bnqdflow.effect_size_measures import Sharp
 from bnqdflow.analyses import Analysis
-
-'''
-xs, ys = util.linear_dummy_data()
-cm = BNQD.ContinuousModel(xs, ys, gpf.kernels.Linear())
-opt = gpf.optimizers.Scipy()
-cm.train()
-#print(cm.predict(np.array([[1.]])))
-print(type(np.random.uniform(0, 10, size=(50,))))
-print(type(np.random.uniform(0, 10, size=50)))
-'''
 
 
 class A:
@@ -84,66 +79,49 @@ class B2(B):
 
 
 
-b = 0.
-ip = 0.0
-n = 300
-dc = 0.0
-x = np.linspace(-5, 5, n)
-f = (b + 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc)
-f2 = 0
-sigma = 1
-y = np.random.normal(f2, sigma, size=n) + b
+#####################################
+###### Test Dataset Parameters ######
+#####################################
 
-xc = tf.Variable([1, 2, 3])
-xi = tf.Variable([4, 5, 6])
-yc = tf.Variable([10, 20, 30])
-yi = tf.Variable([40, 50, 60])
-dc = (xc, yc)
-di = (xi, yi)
-
-k1 = RBF()# + gpflow.kernels.Constant()
-k2 = RBF()#Linear() + Constant()
-m1 = GPR((x[:, None], y[:, None]), k1)
-m2 = GPR((x[:, None], y[:, None]), k2)
+ip = 0.  # Intervention point
+dc = .0  # Discontinuity
+sigma = 0.1  # Standard deviation
+sigma_d = 0.  # Value added to the standard deviation after the intervention point
+n = 100  # Number of data points
 
 
-class Container:
-    def __init__(self, m1, m2):
-        self.m1 = m1
-        self.m2 = m2
+############################
+###### Kernel Options ######
+############################
 
-def cl():
-    return -m1.maximum_log_likelihood_objective()
+#k = Constant() + Linear()  # "Linear" kernel
+#k = Exponential()
+k = SquaredExponential()
+#k = Periodic(SquaredExponential())
+#k = Cosine() + Constant()
 
 
-opt = gpflow.optimizers.Scipy()
+###########################################
+###### Generation of Test Dataset ######
+###########################################
 
-opt.minimize(cl, m1.trainable_variables)
+x = np.linspace(-3, 3, n)  # Evenly distributed x values
 
-gf.utilities.print_summary(m1)
+# Latent function options
+f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
+y = np.random.normal(f, sigma + sigma_d * (x > ip), size=n)  # y values as the underlying function + noise
 
-print(tf.reshape(gpflow.base.Parameter([0]), (1, -1)))
+# Uncomment to flip the data along the y-axis
+y = np.flip(y)
 
-xs = np.linspace(-7, 7, 200)[:, None]
+# Data used by the control model (pre-intervention)
+xc = x[x <= ip]
+yc = y[x <= ip]
 
-plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
+# Data used by the (post-)intervention model
+xi = x[x > ip]
+yi = y[x > ip]
 
-ms, vs = m1.predict_f(xs)
 
-bnqdflow.util.plot_regression(xs[:, 0], ms[:, 0], vs[:, 0])
-
-plt.show()
-
-plt.plot(x, y, linestyle='none', marker='x', color='k', label='obs')
-
-ms, vs = m1.predict_y(xs)
-
-bnqdflow.util.plot_regression(xs[:, 0], ms[:, 0], vs[:, 0])
-
-plt.show()
-"""
-Options this whole effect size distribution thingy:
-Option 1:
-    Just have different static functions for different effect size measures
-    + No need for inheritance
-    - """
+gpc = GPMContainer(SquaredExponential(), [(x, y)])
+gpc.train()

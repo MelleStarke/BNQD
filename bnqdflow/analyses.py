@@ -13,7 +13,7 @@ from gpflow.models.model import GPModel, InputData
 
 from bnqdflow import util
 from bnqdflow.models import ContinuousModel, DiscontinuousModel
-from bnqdflow.data_types import ContinuousData, DiscontinuousData
+from bnqdflow import ContinuousData, DiscontinuousData
 
 
 class Analysis(ABC):
@@ -22,7 +22,7 @@ class Analysis(ABC):
     """
 
     def __init__(self, data: Union[ContinuousData, DiscontinuousData], intervention_point: Tensor,
-                 share_params: bool = False, marginal_likelihood_method: str = "bic", optimizer: Any = None,
+                 share_params: bool = True, marginal_likelihood_method: str = "bic", optimizer: Any = None,
                  effect_size_measure=None):
 
         self.continuous_data = None
@@ -66,7 +66,7 @@ class SimpleAnalysis(Analysis):
             data: Union[ContinuousData, DiscontinuousData],
             regression_object: Union[Kernel, GPModel, Tuple[ContinuousModel, DiscontinuousModel]],
             intervention_point: Tensor,
-            share_params: bool = False,
+            share_params: bool = True,
             marginal_likelihood_method: str = "bic",
             optimizer: Any = None,
             effect_size_measure=None):
@@ -144,7 +144,7 @@ class SimpleAnalysis(Analysis):
 
         # Initializes the continuous model if it's None
         if self.continuous_model is None:
-            self.continuous_model = ContinuousModel(self.continuous_data, self.__regression_object)
+            self.continuous_model = ContinuousModel(self.__regression_object, self.continuous_data)
         else:
             # If it already exists, checks if the data the model uses is the same as the data in the analysis object
             if not (self.continuous_model.data == self.continuous_data):
@@ -153,7 +153,7 @@ class SimpleAnalysis(Analysis):
 
         # Initializes the discontinuous model if it's None
         if self.discontinuous_model is None:
-            self.discontinuous_model = DiscontinuousModel(self.discontinuous_data, self.__regression_object,
+            self.discontinuous_model = DiscontinuousModel(self.__regression_object, self.discontinuous_data,
                                                           self.intervention_point, self.share_params)
         else:
             # If it already exists, checks if the data the model uses is the same as the data in the analysis object
@@ -161,7 +161,7 @@ class SimpleAnalysis(Analysis):
                 warnings.warn("The discontinuous model isn't using the same data as the discontinuous data contained in"
                               "the analysis object.")
 
-    def train(self, optimizer=None):
+    def train(self, optimizer=None, verbose=True):
         """
         Trains both the continuous and the discontinuous model
         """
@@ -180,23 +180,24 @@ class SimpleAnalysis(Analysis):
         # If neither the optimizer passed to the function, nor self.optimizer are None,
         # use this optimizer to train the models
         if optimizer:
-            self.continuous_model.train(optimizer)
-            self.discontinuous_model.train(optimizer)
+            self.continuous_model.train(optimizer, verbose=verbose)
+            self.discontinuous_model.train(optimizer, verbose=verbose)
 
         # If both are none, train the models with the default optimizer
         else:
-            self.continuous_model.train()
-            self.discontinuous_model.train()
+            self.continuous_model.train(verbose=verbose)
+            self.discontinuous_model.train(verbose=verbose)
 
-    def plot_regressions(self, n_samples=100, num_f_samples=5, plot_data=True, predict_y=False):
+    def plot_regressions(self, n_samples=100, padding: Union[float, Tuple[float]] = 0.2, num_f_samples=5,
+                         plot_data=True, predict_y=False):
         """
         Plots both the continuous and the discontinuous model
         """
         # TODO: return a pyplot object instead to allow separate plotting
         # TODO: allow for splitting into one plot per model, for better visibility
         plt.title("GP regressions")
-        self.continuous_model.plot_regression(n_samples, num_f_samples, False, predict_y)
-        self.discontinuous_model.plot_regression(n_samples, num_f_samples, plot_data, predict_y)
+        self.continuous_model.plot_regression(n_samples, padding, num_f_samples, False, predict_y)
+        self.discontinuous_model.plot_regression(n_samples, padding, num_f_samples, plot_data, predict_y)
 
     def log_bayes_factor(self, method: str = None, verbose: bool = False) -> tf.Tensor:
         """
