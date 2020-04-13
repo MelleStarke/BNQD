@@ -5,8 +5,35 @@ from typing import List, Union, Tuple
 from gpflow.models.model import RegressionData
 
 
+class State:
+    """
+    Really ugly way to allow for setting and getting of global variables.
+
+    At least it's a singleton.
+    """
+    __instance = None
+
+    # If True, uses the copy_kernel function in bnqdflow.util when copying kernels.
+    # If false, use the deepcopy function from gpflow.utilities
+    use_custom_kernel_copy_function = False
+
+    @staticmethod
+    def get_instance():
+        """ Static access method. """
+        if State.__instance is None:
+            State()
+        return State.__instance
+
+    def __init__(self):
+        """ Virtually private constructor. """
+        if State.__instance is not None:
+            raise Exception("This class is a singleton!")
+        else:
+            State.__instance = self
+
+
 # Data for the continuous model: tuple of tensors / ndarrays
-ContinuousData = RegressionData #Tuple[Union[Tensor, ndarray], Union[Tensor, ndarray]]
+ContinuousData = RegressionData  # Tuple[Union[Tensor, ndarray], Union[Tensor, ndarray]]
 
 # Data for the discontinuous model: list of continuous data
 DiscontinuousData = List[ContinuousData]
@@ -14,3 +41,11 @@ DiscontinuousData = List[ContinuousData]
 
 def IS_GPMODEL(o):
     return isinstance(o, GPModel)
+
+
+def SET_USE_CUSTOM_KERNEL_COPY_FUNCTION(b: bool = True):
+    State.get_instance().use_custom_kernel_copy_function = b
+
+@property
+def USE_CUSTOM_KERNEL_COPY_FUNCTION():
+    return State.get_instance().use_custom_kernel_copy_function

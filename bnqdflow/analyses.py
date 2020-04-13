@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import warnings
 import pandas as pd
 import numpy as np
+import gpflow as gf
+import bnqdflow as bf
 
 from abc import ABC
 
@@ -146,7 +148,14 @@ class SimpleAnalysis(Analysis):
 
         # Initializes the continuous model if it's None
         if self.continuous_model is None:
-            self.continuous_model = ContinuousModel(self.__regression_object, self.continuous_data)
+            # Uses BNQDflow's custom kernel copying function if both bnqdflow.USE_CUSTOM_KERNEL_COPY_FUNCTION is true
+            # and the regression object is a kernel
+            if isinstance(self.__regression_object, Kernel) and bf.USE_CUSTOM_KERNEL_COPY_FUNCTION:
+                regression_object = util.copy_kernel(self.__regression_object)
+            else:
+                regression_object = gf.utilities.deepcopy(self.__regression_object)
+
+            self.continuous_model = ContinuousModel(regression_object, self.continuous_data)
         else:
             # If it already exists, checks if the data the model uses is the same as the data in the analysis object
             if not (self.continuous_model.data == self.continuous_data):
@@ -155,7 +164,14 @@ class SimpleAnalysis(Analysis):
 
         # Initializes the discontinuous model if it's None
         if self.discontinuous_model is None:
-            self.discontinuous_model = DiscontinuousModel(self.__regression_object, self.discontinuous_data,
+            # Uses BNQDflow's custom kernel copying function if both bnqdflow.USE_CUSTOM_KERNEL_COPY_FUNCTION is true
+            # and the regression object is a kernel
+            if isinstance(self.__regression_object, Kernel) and bf.USE_CUSTOM_KERNEL_COPY_FUNCTION:
+                regression_object = util.copy_kernel(self.__regression_object)
+            else:
+                regression_object = gf.utilities.deepcopy(self.__regression_object)
+
+            self.discontinuous_model = DiscontinuousModel(regression_object, self.discontinuous_data,
                                                           self.intervention_point, self.share_params)
         else:
             # If it already exists, checks if the data the model uses is the same as the data in the analysis object

@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import sys
 from scipy.stats import norm
 import random
+import bnqdflow as bf
 
 from typing import List, Tuple
 
@@ -24,8 +25,6 @@ from bnqdflow.models import GPMContainer, ContinuousModel, DiscontinuousModel
 import gpflow.mean_functions as mf
 from gpflow.kernels import *
 from gpflow.models import GPR
-
-import bnqdflow
 
 import random
 
@@ -136,21 +135,12 @@ kernels = [
     Periodic(RBF())
 ]
 
-new_kernels = list(map(copy_kernel, kernels))
-
-
-class C(tf.Module):
-    def __init__(self, ks1, ks2):
-        super().__init__()
-        self.ks1 = ks1
-        self.ks2 = ks2
-
-
-c = C(kernels, new_kernels)
+bf.SET_USE_CUSTOM_KERNEL_COPY_FUNCTION(True)
 
 for k in kernels:
-    m = GPR((x[:, None], y[:, None]), k)
-    opt = gf.optimizers.Scipy()
-    opt.minimize(m._training_loss, m.trainable_variables)
-
-gf.utilities.print_summary(c)
+    print(f"using {k.__class__.__name__}")
+    a = bf.analyses.SimpleAnalysis([(xc, yc), (xi, yi)], k, ip, share_params=False)
+    a.train()
+    plt.title(k.__class__.__name__)
+    a.plot_regressions()
+    plt.show()
