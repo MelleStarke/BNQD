@@ -277,8 +277,7 @@ class GPMContainer(Module):
         # Uses the optimizer to minimize the objective_closure function, by adjusting the trainable variables.
         # The trainable variables are obtained by recursively finding fields of type Variable,
         # if and only if they're defined as being trainable.
-        optimizer.minimize(self._training_loss, self.trainable_variables,
-                           options=(dict(maxiter=MAX_OPTIMIZER_ITERATIONS)))
+        optimizer.minimize(self._training_loss, self.trainable_variables)
 
         if verbose:
             gf.utilities.print_summary(self)

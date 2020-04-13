@@ -2,11 +2,14 @@ import gpflow as gf
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
+import warnings
 
 from typing import Union, List, Callable
 
 from gpflow.mean_functions import MeanFunction
 from gpflow.models.model import InputData
+from gpflow.kernels import *
+from gpflow.utilities import parameter_dict, multiple_assign
 
 from numpy import ndarray
 
@@ -105,6 +108,161 @@ def plot_regression(x, mean, std, col="blue", alpha=0.2):
     plt.fill_between(x, mean - 1.96 * std, mean + 1.96 * std, color=col, alpha=alpha)
 
 
+##############################
+###### Kernel Utilities ######
+##############################
+
+def copy_kernel(kernel: Kernel) -> Kernel:
+    """
+    Returns a copy of the input kernel with the same values but different pointers.
+
+    Should only be used if copy.deepcopy or gpflow.utilities.deepcopy don't work.
+    Also checks whether or not the tf.Module objects are actually different.
+    If you do not wish to check this, use _copy_kernel() instead.
+    """
+    new_kernel = _copy_kernel(kernel)
+
+    # The next bit of code checks whether the copying process was successful
+
+    # Function applied to all objects contained in the kernels (of the target types)
+    def same_objects(source: tf.Module, target: tf.Module) -> bool:
+        return source is target
+
+    # Types of the objects shat should be compared
+    target_types = (tf.Module,)
+
+    try:
+        # List of strings (or paths) indicating what objects are the same
+        same_object_paths = compare_modules(kernel, new_kernel, same_objects, target_types)
+
+        if len(same_object_paths) > 0:
+            msg = "One or more objects are shared between the kernels. So they're not true copies of each other:"
+            for path in same_object_paths:
+                msg += f"\n\t{path}"
+            warnings.warn(msg)
+
+        return new_kernel
+
+    except ValueError as e:
+        raise ValueError(f"The kernels contain objects of different types. Therefore the result of the _copy_kernel "
+                         f"function cannot be validated:\n{e}")
+
+
+def _copy_kernel(kernel: Kernel) -> Kernel:
+    """
+    Returns a copy of the input kernel with the same values but different pointers.
+
+    Doesn't check whether or not the tf.Module objects are actually different.
+    """
+    # Case for when the kernel is a sum of multiple kernels
+    if type(kernel) is Sum:
+        res = _copy_kernel(kernel.kernels[0])
+        for sub_kernel in kernel.kernels[1:]:
+            res += _copy_kernel(sub_kernel)
+        return res
+
+    # Case for when the kernel is a product of multiple kernels
+    if type(kernel) is Product:
+        res = _copy_kernel(kernel.kernels[0])
+        for sub_kernel in kernel.kernels[1:]:
+            res *= _copy_kernel(sub_kernel)
+        return res
+
+    # Case for when the kernel is convolutional
+    if type(kernel) is Convolutional:
+        image_shape = kernel.image_shape
+        patch_shape = kernel.patch_shape
+        base_kernel = _copy_kernel(kernel.base_kernel)
+        colour_channels = kernel.colour_channels
+        res = Convolutional(_copy_kernel(base_kernel), image_shape, patch_shape, colour_channels=colour_channels)
+        multiple_assign(res, parameter_dict(kernel))
+        return res
+
+    # Case for when the kernel is a change-point kernel
+    if type(kernel) is ChangePoints:
+        kernels = list(map(_copy_kernel, kernel.kernels))
+        locations = kernel.locations
+        steepness = kernel.steepness
+        name = kernel.name
+        res = ChangePoints(kernels, locations, steepness=steepness, name=name)
+        multiple_assign(res, parameter_dict(kernel))
+        return res
+
+    # Case for when the kernel is periodic
+    if type(kernel) is Periodic:
+        base_kernel = _copy_kernel(kernel.base_kernel)
+        period = kernel.period
+        res = Periodic(base_kernel, period=period)
+        multiple_assign(res, parameter_dict(kernel))
+        return res
+
+    # Case for when the kernel is (an instance of) a linear kernel
+    if isinstance(kernel, Linear):
+        variance = kernel.variance
+        active_dims = kernel.active_dims
+
+        options = [
+            Linear,
+            Polynomial
+        ]
+
+        correct_classes = [o for o in options if type(kernel) is o]
+        assert len(correct_classes) == 1, f"Only one class should match. List of correct classes: {correct_classes}"
+
+        if type(kernel) is Polynomial:
+            # Calls the constructor of the (only) correct kernel class
+            res = correct_classes[0](variance=variance, active_dims=active_dims, degree=kernel.degree)
+        else:
+            # Calls the constructor of the (only) correct kernel class
+            res = correct_classes[0](variance=variance, active_dims=active_dims)
+        multiple_assign(res, parameter_dict(kernel))
+        return res
+
+    # Case for when the kernel is an instance of a static kernel
+    if isinstance(kernel, Static):
+        active_dims = kernel.active_dims
+
+        options = [
+            White,
+            Constant
+        ]
+
+        correct_classes = [o for o in options if type(kernel) is o]
+        assert len(correct_classes) == 1, f"Only one class should match. List of correct classes: {correct_classes}"
+
+        # Calls the constructor of the (only) correct kernel class
+        res = correct_classes[0](active_dims=active_dims)
+        multiple_assign(res, parameter_dict(kernel))
+        return res
+
+    # Case for when the kernel is an instance of a stationary kernel
+    if isinstance(kernel, Stationary):
+        active_dims = kernel.active_dims
+        name = kernel.name
+        variance = kernel.variance
+        lengthscales = kernel.lengthscales
+
+        options = [
+            SquaredExponential,
+            Cosine,
+            Exponential,
+            Matern12,
+            Matern32,
+            Matern52,
+            RationalQuadratic
+        ]
+
+        correct_classes = [o for o in options if type(kernel) is o]
+        assert len(correct_classes) == 1, \
+            "Only one class should match. List of correct classes: {}".format(correct_classes)
+
+        # Calls the constructor of the (only) correct kernel class
+        res = correct_classes[0](variance=variance, lengthscales=lengthscales, active_dims=active_dims, name=name)
+        multiple_assign(res, parameter_dict(kernel))
+        return res
+
+    raise ValueError(f"BNQDflow's copy_kernel function doesn't support this kernel type: {type(kernel)}")
+
 ###################################
 ###### Custom Mean Functions ######
 ###################################
@@ -141,20 +299,18 @@ class Step(MeanFunction):
         return res
 
 
-#########################################
-###### Methods Useless in Practice ######
-#########################################
+##############################
+###### Module Utilities ######
+##############################
 
-target_types = (gf.Parameter, tf.Variable)
-
-
-def equalize_parameters(source: tf.Module, target: tf.Module, path=None):
+def compare_modules(source: tf.Module, target: tf.Module, condition: Callable[[object, object], bool],
+                              target_types=(gf.Parameter, tf.Variable), path=None):
     """
-    ####################
-    ### DOESN'T WORK ###
-    ####################
-    The idea was that this function made all pointers of the target types defined above point to the same object.
-    But it doesn't do anything. The structure might be helpful in the future though.
+    Recursively iterates over all tf.Module objects found in the source and the target
+    and returns a list of paths for which the condition holds.
+
+    The condition is a function that takes two arguments (obe object from the source and one object from the target)
+    and returns a bool. If this bool is True, it appends the path to that object to the result.
     """
     if not (type(source) is type(target)):
         raise ValueError("Source and target module aren't of the same type.\n"
@@ -167,25 +323,25 @@ def equalize_parameters(source: tf.Module, target: tf.Module, path=None):
     res = list()
 
     if isinstance(source, target_types):
-        target = source
-        res += [path]
+        if condition(source, target):
+            res += [path]
 
-    elif isinstance(source, (list, tuple)):
+    if isinstance(source, (list, tuple)):
         for i, (sub_source, sub_target) in enumerate(zip(source, target)):
             new_path = f"{path}[{i}]"
-            res += equalize_parameters(sub_source, sub_target, new_path)
+            res += compare_modules(sub_source, sub_target, condition, target_types, new_path)
 
     elif isinstance(source, dict):
         for (source_key, sub_source), (target_key, sub_target) in zip(source.items(), target.items()):
             new_path = f"{path}['{source_key}']"
-            res += equalize_parameters(sub_source, sub_target, new_path)
+            res += compare_modules(sub_source, sub_target, condition, target_types, new_path)
 
     elif isinstance(source, tf.Module):
         for (source_name, sub_source), (target_name, sub_target) in zip(vars(source).items(), vars(target).items()):
             if source_name in tf.Module._TF_MODULE_IGNORED_PROPERTIES:
                 continue
             new_path = f"{path}.{source_name}"
-            res += equalize_parameters(sub_source, sub_target, new_path)
+            res += compare_modules(sub_source, sub_target, condition, target_types, new_path)
     return res
 
 

@@ -2,6 +2,8 @@ import tensorflow as tf
 import numpy as np
 import scipy.stats as stats
 
+from typing import Tuple
+
 from abc import abstractmethod, ABC
 
 from bnqdflow.analyses import Analysis, SimpleAnalysis, PlaceholderAnalysis
@@ -36,7 +38,7 @@ class Sharp(EffectSizeMeasure):
     Calculates the effect size while assuming there is a discrete separation between the data used by the sub-models of
     the discontinuous model.
     """
-    def __init__(self, n_samples: int = 300, n_mc_samples: int = 500):
+    def __init__(self, n_samples: int = 300, n_mc_samples: int = 500, x_range: Tuple[float, float] = None):
         """
         :param n_samples: Number of x-samples used for the effect size distribution.
         :param n_mc_samples: Number of Monte Carlo samples for the BMA density estimate.
@@ -44,6 +46,7 @@ class Sharp(EffectSizeMeasure):
         super().__init__()
         self.n_samples = n_samples
         self.n_mc_samples = n_mc_samples
+        self.x_range = x_range
 
     @visitor(Analysis)
     def calculate_effect_size(self, analysis):
@@ -86,8 +89,11 @@ class Sharp(EffectSizeMeasure):
         else:
             pval = stats.norm.cdf(x=0, loc=disc_mean_diff, scale=disc_std_diff)
 
-        xmin, xmax = (np.min([disc_mean_diff - 4 * disc_std_diff, -0.1 * disc_std_diff]),
-                      np.max([disc_mean_diff + 4 * disc_std_diff, 0.1 * disc_std_diff]))
+        if self.x_range is None:
+            xmin, xmax = (np.min([disc_mean_diff - 4 * disc_std_diff, -0.1 * disc_std_diff]),
+                          np.max([disc_mean_diff + 4 * disc_std_diff, 0.1 * disc_std_diff]))
+        else:
+            xmin, xmax = self.x_range
 
         xrange = np.linspace(xmin, xmax, self.n_samples)
 

@@ -1,6 +1,8 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import warnings
+import pandas as pd
+import numpy as np
 
 from abc import ABC
 
@@ -189,14 +191,15 @@ class SimpleAnalysis(Analysis):
             self.discontinuous_model.train(verbose=verbose)
 
     def plot_regressions(self, n_samples=100, padding: Union[float, Tuple[float]] = 0.2, num_f_samples=5,
-                         plot_data=True, predict_y=False):
+                         plot_data=True, predict_y=False, separate=True):
         """
         Plots both the continuous and the discontinuous model
         """
         # TODO: return a pyplot object instead to allow separate plotting
         # TODO: allow for splitting into one plot per model, for better visibility
-        plt.title("GP regressions")
-        self.continuous_model.plot_regression(n_samples, padding, num_f_samples, False, predict_y)
+        self.continuous_model.plot_regression(n_samples, padding, num_f_samples, (plot_data if separate else False), predict_y)
+        if separate:
+            plt.show()
         self.discontinuous_model.plot_regression(n_samples, padding, num_f_samples, plot_data, predict_y)
 
     def log_bayes_factor(self, method: str = None, verbose: bool = False) -> tf.Tensor:

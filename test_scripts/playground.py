@@ -18,11 +18,11 @@ import random
 
 from typing import List, Tuple
 
-from bnqdflow.util import visitor, Step
+from bnqdflow.util import visitor, Step, copy_kernel
 from bnqdflow.models import GPMContainer, ContinuousModel, DiscontinuousModel
 
 import gpflow.mean_functions as mf
-from gpflow.kernels import RBF, Linear, Constant, Static, White, SquaredExponential
+from gpflow.kernels import *
 from gpflow.models import GPR
 
 import bnqdflow
@@ -84,8 +84,8 @@ class B2(B):
 #####################################
 
 ip = 0.  # Intervention point
-dc = .0  # Discontinuity
-sigma = 0.1  # Standard deviation
+dc = 1.  # Discontinuity
+sigma = 0.5  # Standard deviation
 sigma_d = 0.  # Value added to the standard deviation after the intervention point
 n = 100  # Number of data points
 
@@ -122,6 +122,35 @@ yc = y[x <= ip]
 xi = x[x > ip]
 yi = y[x > ip]
 
+kernels = [
+    RBF(),
+    Linear() + Constant(),
+    Constant(),
+    White(),
+    SquaredExponential(),
+    Exponential(),
+    Matern32(),
+    Cosine(),
+    Linear() * White(),
+    Polynomial(),
+    Periodic(RBF())
+]
 
-gpc = GPMContainer(SquaredExponential(), [(x, y)])
-gpc.train()
+new_kernels = list(map(copy_kernel, kernels))
+
+
+class C(tf.Module):
+    def __init__(self, ks1, ks2):
+        super().__init__()
+        self.ks1 = ks1
+        self.ks2 = ks2
+
+
+c = C(kernels, new_kernels)
+
+for k in kernels:
+    m = GPR((x[:, None], y[:, None]), k)
+    opt = gf.optimizers.Scipy()
+    opt.minimize(m._training_loss, m.trainable_variables)
+
+gf.utilities.print_summary(c)
