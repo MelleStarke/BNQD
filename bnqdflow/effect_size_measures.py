@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import scipy.stats as stats
+import matplotlib.pyplot as plt
 
 from typing import Tuple
 
@@ -128,10 +129,10 @@ class Sharp(EffectSizeMeasure):
 
         self.effect_size = {
             # Estimated Bayesian model average
-            'es_BMA': d_bma,
+            'es_bma': d_bma,
 
             # Estimated effect size by the discontinuous model
-            'es_Disc': y,
+            'es_disc': y,
 
             # Difference in mean and standard deviation of the two sub-models of the discontinuous model.
             'es_disc_stats': (disc_mean_diff, disc_std_diff),
@@ -154,6 +155,12 @@ class Sharp(EffectSizeMeasure):
         print("There doesn't exist an implementation for Sharp.calculate_effect_size() for {}"
               .format(analysis.__class__.__name__))
         return None
+
+    def plot_bma(self):
+        plt.title("BMA effect size")
+        x_range = self.effect_size['es_range']
+        plt.plot(x_range, self.effect_size['es_bma'], label='BMA')
+        plt.plot(x_range, self.effect_size['es_disc'], label='Discontinuous effect size estimate')
 
 
 class FuzzyEffectSize(EffectSizeMeasure):

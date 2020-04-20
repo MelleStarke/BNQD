@@ -5,10 +5,6 @@ import warnings
 import bnqdflow.util as util
 import tensorflow as tf
 
-from abc import abstractmethod
-
-from bnqdflow import ContinuousData, DiscontinuousData, IS_GPMODEL
-
 from typing import Optional, Tuple, Union, List, Any
 
 from numpy import ndarray
@@ -21,7 +17,6 @@ from gpflow import optimizers, Module
 from gpflow.kernels import Kernel
 from gpflow.models import GPModel, GPR
 from gpflow.models.model import InputData, MeanAndVariance, RegressionData
-from gpflow.mean_functions import MeanFunction
 
 ##############################
 ###### Global Constants ######

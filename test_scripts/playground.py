@@ -22,6 +22,8 @@ from typing import List, Tuple
 from bnqdflow.util import visitor, Step, copy_kernel
 from bnqdflow.models import GPMContainer, ContinuousModel, DiscontinuousModel
 
+from tensorflow_probability import distributions as dist
+
 import gpflow.mean_functions as mf
 from gpflow.kernels import *
 from gpflow.models import GPR
@@ -82,11 +84,12 @@ class B2(B):
 ###### Test Dataset Parameters ######
 #####################################
 
-ip = 0.  # Intervention point
+ip = 2.5  # Intervention point
+ip2 = 2.3
 dc = 1.  # Discontinuity
 sigma = 0.5  # Standard deviation
 sigma_d = 0.  # Value added to the standard deviation after the intervention point
-n = 100  # Number of data points
+n = 10  # Number of data points
 
 
 ############################
@@ -104,6 +107,8 @@ k = SquaredExponential()
 ###### Generation of Test Dataset ######
 ###########################################
 
+np.random.seed(3)
+
 x = np.linspace(-3, 3, n)  # Evenly distributed x values
 
 # Latent function options
@@ -117,30 +122,28 @@ y = np.flip(y)
 xc = x[x <= ip]
 yc = y[x <= ip]
 
+xd = x[x > ip]
+yd = y[x > ip]
+
 # Data used by the (post-)intervention model
-xi = x[x > ip]
-yi = y[x > ip]
+xi = xd[xd <= ip2]
+yi = yd[xd <= ip2]
 
-kernels = [
-    RBF(),
-    Linear() + Constant(),
-    Constant(),
-    White(),
-    SquaredExponential(),
-    Exponential(),
-    Matern32(),
-    Cosine(),
-    Linear() * White(),
-    Polynomial(),
-    Periodic(RBF())
-]
+xe = xd[xd > ip2]
+ye = yd[xd > ip2]
 
-bf.SET_USE_CUSTOM_KERNEL_COPY_FUNCTION(True)
+ks = [RBF(), RBF()]
 
-for k in kernels:
-    print(f"using {k.__class__.__name__}")
-    a = bf.analyses.SimpleAnalysis([(xc, yc), (xi, yi)], k, ip, share_params=False)
-    a.train()
-    plt.title(k.__class__.__name__)
-    a.plot_regressions()
-    plt.show()
+ks[1].variance.prior = dist.Gamma(np.float64(20), np.float64(4.35))
+m1 = None
+for k in ks:
+    m1 = GPMContainer(gf.utilities.deepcopy(k), [(x, y)], [])
+    m2 = GPMContainer(gf.utilities.deepcopy(k), [(xc, yc), (xd, yd)], [ip])
+    for name, m in zip(['c', 'd'], [m1, m2]):
+        m.train()
+        m.plot_regression()
+        plt.show()
+        print(f"{name} l: {m.log_posterior_density()}")
+
+print(f"trainable parameters: {m1.trainable_parameters}")
+print(f"log prior density: {m1.kernel.variance.log_prior_density()}")

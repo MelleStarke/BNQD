@@ -15,12 +15,11 @@ from tensorflow import Tensor
 from gpflow.kernels import Kernel
 from gpflow.models.model import GPModel, InputData
 
-from bnqdflow import util
 from bnqdflow.models import ContinuousModel, DiscontinuousModel
-from bnqdflow import ContinuousData, DiscontinuousData
+from bnqdflow import util, ContinuousData, DiscontinuousData, USE_CUSTOM_KERNEL_COPY_FUNCTION
 
 
-class Analysis(ABC):
+class Analysis(tf.Module):
     """
     Abstract analysis class
     """
@@ -28,6 +27,7 @@ class Analysis(ABC):
     def __init__(self, data: Union[ContinuousData, DiscontinuousData], intervention_point: Tensor,
                  share_params: bool = True, marginal_likelihood_method: str = "bic", optimizer: Any = None,
                  effect_size_measure=None):
+        super().__init__()
 
         self.continuous_data = None
         self.discontinuous_data = None
@@ -108,6 +108,8 @@ class SimpleAnalysis(Analysis):
         else:
             self.__regression_object = regression_object
 
+        self.summary_object = None
+
     def init_models(self, labeler: Union[List[InputData], Callable[[InputData], int]] = None) -> None:
         """
         Initializes the continuous and discontinuous model.
@@ -166,7 +168,7 @@ class SimpleAnalysis(Analysis):
         if self.discontinuous_model is None:
             # Uses BNQDflow's custom kernel copying function if both bnqdflow.USE_CUSTOM_KERNEL_COPY_FUNCTION is true
             # and the regression object is a kernel
-            if isinstance(self.__regression_object, Kernel) and bf.USE_CUSTOM_KERNEL_COPY_FUNCTION:
+            if isinstance(self.__regression_object, Kernel) and USE_CUSTOM_KERNEL_COPY_FUNCTION:
                 regression_object = util.copy_kernel(self.__regression_object)
             else:
                 regression_object = gf.utilities.deepcopy(self.__regression_object)
@@ -178,6 +180,8 @@ class SimpleAnalysis(Analysis):
             if not (self.discontinuous_model.data == self.discontinuous_data):
                 warnings.warn("The discontinuous model isn't using the same data as the discontinuous data contained in"
                               "the analysis object.")
+
+        self.__regression_object = None
 
     def train(self, optimizer=None, verbose=True):
         """
@@ -217,6 +221,8 @@ class SimpleAnalysis(Analysis):
         if separate:
             plt.show()
         self.discontinuous_model.plot_regression(n_samples, padding, num_f_samples, plot_data, predict_y)
+        if separate:
+            plt.show()
 
     def log_bayes_factor(self, method: str = None, verbose: bool = False) -> tf.Tensor:
         """
