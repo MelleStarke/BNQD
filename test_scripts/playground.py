@@ -84,10 +84,10 @@ class B2(B):
 ###### Test Dataset Parameters ######
 #####################################
 
-ip = 2.5  # Intervention point
+ip = 0  # Intervention point
 ip2 = 2.3
-dc = 1.  # Discontinuity
-sigma = 0.5  # Standard deviation
+dc = .5  # Discontinuity
+sigma = 0.2  # Standard deviation
 sigma_d = 0.  # Value added to the standard deviation after the intervention point
 n = 10  # Number of data points
 
@@ -112,11 +112,12 @@ np.random.seed(3)
 x = np.linspace(-3, 3, n)  # Evenly distributed x values
 
 # Latent function options
-f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
+#f = 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 4) + dc * (x > ip)  # Underlying function
+f = (0.8 - 1.6 * (x > ip))*x + dc * (x > ip)
 y = np.random.normal(f, sigma + sigma_d * (x > ip), size=n)  # y values as the underlying function + noise
 
 # Uncomment to flip the data along the y-axis
-y = np.flip(y)
+#y = np.flip(y)
 
 # Data used by the control model (pre-intervention)
 xc = x[x <= ip]
@@ -132,9 +133,14 @@ yi = yd[xd <= ip2]
 xe = xd[xd > ip2]
 ye = yd[xd > ip2]
 
-ks = [RBF(), RBF()]
+k = Linear() + Constant()
 
-ks[1].variance.prior = dist.Gamma(np.float64(20), np.float64(4.35))
+m = GPMContainer(k, [(xc, yc), (xd, yd)], [ip])
+m.train()
+m.plot_regression()
+plt.show()
+
+"""ks[1].variance.prior = dist.Gamma(np.float64(20), np.float64(4.35))
 m1 = None
 for k in ks:
     m1 = GPMContainer(gf.utilities.deepcopy(k), [(x, y)], [])
@@ -146,4 +152,4 @@ for k in ks:
         print(f"{name} l: {m.log_posterior_density()}")
 
 print(f"trainable parameters: {m1.trainable_parameters}")
-print(f"log prior density: {m1.kernel.variance.log_prior_density()}")
+print(f"log prior density: {m1.kernel.variance.log_prior_density()}")"""

@@ -63,7 +63,7 @@ for e in range(epochs):
     y = np.random.normal(f, sigma + sigma_d * (x > ip), size=n)  # y values as the underlying function + noise
     '''
 
-    x, f, y = linear_data_same_slope(n=100, slope = 3)
+    x, f, y = linear_data_same_slope(n=20, slope = 3)
 
     # Data used by the control model (pre-intervention)
     xc = x[x <= ip]
@@ -84,7 +84,7 @@ for e in range(epochs):
 
             a.train(verbose=False)
 
-            gf.utilities.print_summary(a)
+            #gf.utilities.print_summary(a)
 
             if SHOW_PLOTS:
                 a.plot_regressions()
