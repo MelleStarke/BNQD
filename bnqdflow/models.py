@@ -4,31 +4,42 @@ import gpflow as gf
 import warnings
 import bnqdflow.util as util
 import tensorflow as tf
+import math
 
-from typing import Optional, Tuple, Union, List, Any
+from typing import Optional, Tuple, Union, List, Any, Callable
 
 from numpy import ndarray
 
 from tensorflow import Tensor
 
-from itertools import cycle
+from tensorflow_probability import mcmc
 
-from gpflow import optimizers, Module
+from itertools import cycle, islice
+
+from copy import copy, deepcopy
+
+from gpflow import optimizers, Module, ci_utils
 from gpflow.kernels import Kernel
-from gpflow.models import GPModel, GPR
+from gpflow.models import (GPModel,
+                           GPR,
+                           BayesianModel,
+                           GPMC,
+                           SVGP,
+                           ExternalDataTrainingLossMixin,
+                           InternalDataTrainingLossMixin
+                           )
 from gpflow.models.model import InputData, MeanAndVariance, RegressionData
+from gpflow.likelihoods import Gaussian
 
 ##############################
 ###### Global Constants ######
 ##############################
 
-counter = 0
-
-MAX_OPTIMIZER_ITERATIONS = 100
 N_MODELS = 2  # Nr. of sub-models in the discontinuous model
+N_LOSS_SAMPLES = 20
 
 
-class GPMContainer(Module):
+class GPMContainer(BayesianModel):
     """
     Generic container for GPModel objects.
 
@@ -49,7 +60,8 @@ class GPMContainer(Module):
             regression_source: Union[Kernel, GPModel, List[GPModel]],
             data_list: Optional[List[RegressionData]] = None,
             intervention_points: Optional[List[Tensor]] = None,
-            share_params: Optional[bool] = True
+            share_params: Optional[bool] = True,
+            gpmodel: Optional[str] = 'gpr'
     ):
         super().__init__()
 
@@ -67,7 +79,7 @@ class GPMContainer(Module):
             assert len(data_list) > 0, \
                 "The list of RegressionData cannot be empty."
 
-            self.models = self.generate_gp_models(regression_source, data_list)
+            self.models = self.generate_gp_models(regression_source, data_list, gpmodel)
 
         # Sets the list of intervention points
         self.intervention_points = intervention_points if intervention_points else []
@@ -82,14 +94,6 @@ class GPMContainer(Module):
             # The following parameters are always used in GPModel implementations.
             applicable_params = ['kernel', 'likelihood', 'mean_function']
 
-            # Tries to access the inducing_variable field.
-            # If it exists, add 'inducing_variable' to the list of applicable parameters.
-            try:
-                temp = self.models[0].inducing_variable
-                applicable_params.append('inducing_variable')
-            except AttributeError:
-                pass
-
             if share_params:
                 # Ensures all models use the same hyper parameter objects
                 self._ensure_same_params(applicable_params)
@@ -102,12 +106,16 @@ class GPMContainer(Module):
             # It's better to do this here than by using a default value, because that would make the parameter mutable.
             self.intervention_points = []
 
+        self.optimizer = None
         self.is_trained = False
+        self.posterior_sampling_results = None
 
     @staticmethod
     def generate_gp_models(
             model_or_kernel: Union[GPModel, Kernel],
-            data_list: List[RegressionData]
+            data_list: List[RegressionData],
+            gpmodel: Optional[str] = 'gpr',
+            n_inducing_vars: Optional[Union[Tuple[int], int, Tuple[float], float]] = 0.01
     ):
         """
         Generates a list of GPModel objects with the same length as data_list.
@@ -125,15 +133,33 @@ class GPMContainer(Module):
             "data_list should be a list of tuples of length 2 (i.e. a list of RegressionData)"
 
         is_kernel = isinstance(model_or_kernel, Kernel)
+        n_inducing_vars = n_inducing_vars if type(n_inducing_vars) is tuple else tuple(map(lambda _: n_inducing_vars,
+                                                                                           range(len(data_list))))
 
         models = list()
-        for data in data_list:
+        for i, data in enumerate(data_list):
             # Ensures both the InputData and OutputData are in a format usable by tensorflow
             data = tuple(map(util.ensure_tf_matrix, data))
+            N = len(data[0])
 
             if is_kernel:
-                # Appends a GPR object to the list of models if a Kernel was passed instead of a GPModel
-                models.append(GPR(data, model_or_kernel))
+                if gpmodel.lower() in ['hmc', 'gpmc']:
+                    # Appends a GPMC object to the list of models if a Kernel was passed and HMC will be used
+                    models.append(GPMC(data, model_or_kernel, Gaussian()))
+
+                elif gpmodel.lower() in ['gpr']:
+                    # Appends a GPR object to the list of models if a Kernel was passed and HMC will not be used
+                    models.append(GPR(data, model_or_kernel))
+
+                elif gpmodel.lower() in ['sparse', 'svgp']:
+                    M = n_inducing_vars[i] if type(n_inducing_vars[i]) is int else int(n_inducing_vars[i] * N)
+                    inducing_vars = data[0][np.random.choice(N, size=M, replace=False), :].copy()
+                    models.append(SVGP(model_or_kernel, Gaussian(), inducing_vars, num_data=N))
+                    models[i].data = data
+
+                else:
+                    raise ValueError("{} is not a valid GPModel specification. See gpflow.models for the available "
+                                     "options".format(gpmodel))
 
             else:
                 # Appends a deepcopy of the passed GPModel to the list of models
@@ -170,10 +196,12 @@ class GPMContainer(Module):
                           "between models by definition. share_params will return True by default in this case.")
             return True
 
-        m0_params = self.models[0].parameters
-        return all(map(lambda m: all(map(lambda x: x[0] is x[1],
-                                         zip(m.parameters, m0_params))),
-                       self.models[1:self.n_models]))
+        for i in range(1, self.n_models):
+            if self.models[i].kernel is not self.models[0].kernel \
+            or self.models[i].likelihood is not self.models[0].likelihood:
+                return False
+
+        return True
 
     @property
     def data_list(self) -> List[RegressionData]:
@@ -183,6 +211,10 @@ class GPMContainer(Module):
         :return: List of data of the models.
         """
         return list(map(lambda m: m.data, self.models))
+
+    @property
+    def N(self) -> int:
+        return sum(map(lambda data: len(data[0]), self.data_list))
 
     @property
     def kernel(self):
@@ -210,7 +242,7 @@ class GPMContainer(Module):
             return self.models[0].mean_function
 
         warnings.warn("The models contained in the GPMContainer don't share parameters. Therefore, a single "
-                      "mean_function object cannot be returned. You can call the kernel of s specific model via e.g. "
+                      "mean_function object cannot be returned. You can call the mean function of s specific model via e.g. "
                       "container.models[0].mean_function")
         return None
 
@@ -224,10 +256,35 @@ class GPMContainer(Module):
         :param kwargs:
         :return: Total log likelihood of the GPMContainer.
         """
-        return tf.reduce_sum(list(map(lambda m: m.maximum_log_likelihood_objective(*args, **kwargs), self.models)),
-                             0)
+        if isinstance(self.models[0], SVGP):
+            assert args[0] is not None, \
+                "A RegressionData object needs to be passed for an SVGP to return a likelihood"
 
-    def log_posterior_density(self, method="bic", *args, **kwargs) -> Tensor:
+            data_list = args[0]
+            args = args[1: -1]
+            return tf.math.reduce_sum([m.maximum_log_likelihood_objective(*((data,) + args), **kwargs)
+                                       for m, data in zip(self.models, data_list)])
+
+        return tf.reduce_sum(list(map(lambda m: m.maximum_log_likelihood_objective(*args, **kwargs), self.models)), 0)
+
+    def training_loss_closure(self, *args, **kwargs):
+        if isinstance(self.models[0], ExternalDataTrainingLossMixin):
+            assert args[0] is not None, \
+                "A RegressionData object needs to be passed for an SVGP to return a likelihood"
+
+            data_list = args[0]
+            args = args[1: -1]
+            return tf.math.reduce_sum([m.training_loss_closure(*((data,) + args), **kwargs)
+                                       for m, data in zip(self.models, data_list)])
+
+        if isinstance(self.models[0], InternalDataTrainingLossMixin):
+            
+            if compile:
+                return tf.function(self._training_loss)
+            return self._training_loss
+
+
+    def log_posterior_density(self, method=None, *args, **kwargs) -> Tensor:
         """
         Combined log marginal likelihood of the contained models over their respective data.
         This is done via one of two methods: using the BIC score, or with GPflow's native implementation.
@@ -235,31 +292,74 @@ class GPMContainer(Module):
         :param method: Method used for estimation of the log marginal likelihood. Either "bic" or "native"
         :return: Total log marginal likelihood of GPMContainer.
         """
+        if method is None:
+            if self.posterior_sampling_results is not None:
+                method = 'hmc'
+
+            elif isinstance(self.models[0], SVGP):
+                method = 'elbo'
+
+            else:
+                method = 'bic'
+
         method = method.lower()
 
         if method in ["bic", "bic score", "bic_score"]:
             k = len(self.trainable_parameters)
-            L = self.maximum_log_likelihood_objective()
-            N = sum(map(lambda data: len(data[0]), self.data_list))
-            BIC = L - k / 2 * np.log(N)
+            L = self.log_posterior_density(method='native', *args, **kwargs)
+            BIC = L - k / 2 * np.log(self.N)
             return BIC
 
         elif method in ["native", "nat", "gpflow"]:
-            return tf.reduce_sum(list(map(lambda m: m.log_posterior_density(*args, **kwargs), self.models)), 0)
+            return self.maximum_log_likelihood_objective(*args, **kwargs) + self.log_prior_density()
+
+        elif method in ['mcmc', 'hmc', 'sampled']:
+            return tf.math.log(tf.math.reduce_mean(np.exp(self.posterior_sampling_results[1])))
+
+        elif method in ['svgp', 'sparse', 'elbo']:
+            return self.mean_elbo(*args, **kwargs)
 
         else:
             raise ValueError(f"Incorrect method for log marginal likelihood calculation: {method}. "
                              "Please use either 'bic' or 'native' (i.e. gpflow method)")
 
-    def _training_loss(self, *args, **kwargs) -> Tensor:
-        """
-        Function that the optimizer aims to minimize.
+    def mean_elbo(self, minibatch_size: Optional[Union[int, float]] = 0.02, plot_estimations=False):
+        assert all(map(lambda m: isinstance(m, SVGP), self.models)), \
+            "The GP container doesn't contain sparse models, therefore the elbo cannot be calculated"
 
-        :return: Negative log likelihood of the BNQD regression model.
-        """
-        return tf.reduce_sum(list(map(lambda m: m._training_loss(*args, **kwargs), self.models)), 0)
+        elbo_fns = list(map(tf.function, map(lambda m: m.elbo, self.models)))
+        elbo_means = list()
 
-    def train(self, optimizer: Any = optimizers.Scipy(), verbose=True) -> None:
+        for model, data, elbo_fn in zip(self.models, self.data_list, elbo_fns):
+            batch_size = minibatch_size if type(minibatch_size) is int else int(minibatch_size * len(data[0]))
+            train_data = tf.data.Dataset.from_tensor_slices(data).repeat().shuffle(len(data[0]))
+            train_iter = iter(train_data.batch(batch_size))
+
+            evals = [elbo_fn(batch) for batch in islice(train_iter, batch_size)]
+            elbo_mean = tf.math.reduce_mean(evals)
+            elbo_means.append(elbo_mean)
+
+            if plot_estimations:
+                ground_truth = elbo_fn(data).numpy()
+                plt.figure()
+                plt.hist(evals, label="Minibatch estimations")
+                plt.axvline(ground_truth, c="k", label="Ground truth")
+                plt.axvline(np.mean(evals), c="g", ls="--", label="Minibatch mean")
+                plt.legend()
+                plt.title(f"Histogram of ELBO evaluations using minibatches\nDiscrepancy: {ground_truth - elbo_mean}")
+                plt.show()
+
+        return tf.math.reduce_sum(elbo_means)
+
+    def train(
+            self,
+            optimizer: Any = None,
+            scipy_method: Optional[str] = None,
+            max_iter: Optional[int] = 1000,
+            minibatch_size: Optional[Union[int, float]] = 0.02,
+            loss_variance_goal: Optional[float] = None,
+            verbose=True
+    ) -> Optional[List[Tensor]]:
         """
         Trains all contained models.
 
@@ -269,15 +369,89 @@ class GPMContainer(Module):
         :param optimizer: Optimizer used for estimation of the optimal hyper parameters.
         :param verbose: Prints the model's summary if true.
         """
-        # Uses the optimizer to minimize the objective_closure function, by adjusting the trainable variables.
-        # The trainable variables are obtained by recursively finding fields of type Variable,
-        # if and only if they're defined as being trainable.
-        optimizer.minimize(self._training_loss, self.trainable_variables)
+        using_svgp = isinstance(self.models[0], SVGP)
 
-        if verbose:
-            gf.utilities.print_summary(self)
+        if optimizer is None:
+            optimizer = tf.optimizers.Adam() if using_svgp else optimizers.Scipy()
+
+        self.optimizer = optimizer
+        losses = list()
+
+        # Uses the optimizer to minimize the _training_loss function, by adjusting the trainable variables.
+        if isinstance(optimizer, optimizers.Scipy):
+            assert not using_svgp, "The SciPy optimizer cannot be used for SVGP objects."
+
+            kwargs = dict() if scipy_method is None else {'method': scipy_method}
+            optimizer.minimize(self.training_loss_closure, self.trainable_variables, **kwargs)
+
+        elif isinstance(optimizer, tf.optimizers.Optimizer):
+            args = tuple()
+
+            if using_svgp:
+                minibatch_sizes = np.repeat(minibatch_size, self.n_models) if type(minibatch_size) is int \
+                                  else list(map(lambda data: int(minibatch_size * len(data[0])), self.data_list))
+
+                train_datasets = list(map(lambda data: tf.data.Dataset.from_tensor_slices(data)
+                                          .repeat().shuffle(len(data[0])), self.data_list))
+
+                train_iters = [iter(train_data.batch(batch_size))
+                               for train_data, batch_size in zip(train_datasets, minibatch_sizes)]
+
+                args = (train_iters,)
+
+            for i in range(max_iter):
+                optimizer.minimize(lambda: self._training_loss(*args), self.trainable_variables)
+
+                if not using_svgp or i % 10 == 0:
+                    losses.append(self.training_loss_closure(*args))
+
+                if loss_variance_goal is not None and len(losses) >= N_LOSS_SAMPLES:
+                    variance = np.var(losses[-N_LOSS_SAMPLES - 1:-1])
+                    if variance <= loss_variance_goal:
+                        break
 
         self.is_trained = True
+        return losses
+
+    def sample_posterior_params(self, n_samples=500, n_burnin_steps=300, n_leapfrog_steps=10, step_size=0.01,
+                                n_adapt_step=10, accept_prob=0.75, adaptation_rate=0.1, trace_fn=None):
+        incompatible_params = [name for name, item in gf.utilities.parameter_dict(self).items()
+                               if item.trainable and item.prior is None]
+        assert len(incompatible_params) is 0, \
+            f"All trainable parameters must contain a prior in order to sample the posterior hyper-parameter " \
+            f"distribution. These parameters don't have a prior defined: {incompatible_params}"
+        assert self.is_trained, "The hyper-parameters need to first be initialized to the ML or MAP solution"
+
+        if trace_fn is None:
+            trace_fn = lambda *args: ()
+
+        hmc_helper = optimizers.SamplingHelper(
+            lambda: self.log_posterior_density('native'), self.trainable_parameters
+        )
+
+        hmc = mcmc.HamiltonianMonteCarlo(
+            target_log_prob_fn=hmc_helper.target_log_prob_fn, num_leapfrog_steps=n_leapfrog_steps, step_size=step_size
+        )
+        adaptive_hmc = mcmc.SimpleStepSizeAdaptation(
+            hmc, num_adaptation_steps=n_adapt_step, target_accept_prob=gf.utilities.to_default_float(accept_prob),
+            adaptation_rate=adaptation_rate
+        )
+
+        @tf.function
+        def run_chain_fn():
+            return mcmc.sample_chain(
+                num_results=n_samples,
+                num_burnin_steps=n_burnin_steps,
+                current_state=hmc_helper.current_state,
+                kernel=adaptive_hmc,
+                trace_fn=(lambda states, pkr:
+                          (pkr.inner_results.proposed_results.target_log_prob, trace_fn(states, pkr))),
+            )
+
+        samples, (log_likelihoods, traces) = run_chain_fn()
+        parameter_samples = hmc_helper.convert_to_constrained_values(samples)
+        self.posterior_sampling_results = parameter_samples, log_likelihoods
+        return traces
 
     def predict_f(self, Xnew_list: List[Union[InputData, ndarray]], full_cov=False, full_output_cov=False) \
             -> List[MeanAndVariance]:
@@ -425,6 +599,8 @@ class GPMContainer(Module):
         col = colours[(self.n_models - 1) % len(colours)]
         markers = ['x', '+', '.', '*', 'd', 'v', 's', 'p', 'X', 'P', 'h']
 
+        param_posterior_available = self.posterior_sampling_results is not None
+
         # Formats the margin as a tuple with duplicate elements.
         # Ensures the code works for a single float as well as a tuple of two floats.
         if type(padding) is not tuple:
@@ -444,6 +620,7 @@ class GPMContainer(Module):
         min_x, max_x = (min(x_vals[:, 0]), max(x_vals[:, 0]))
         x_range = max_x - min_x
         min_x, max_x = (min_x - (x_range * padding[0]), max_x + (x_range * padding[1]))
+        x_range = max_x - min_x
 
         # List of intervention points plus the min and max x-value. Used to calculate the x-samples list.
         separations = [min_x] + self.intervention_points + [max_x]
@@ -462,22 +639,59 @@ class GPMContainer(Module):
             section_samples = int(n_samples * section_ratio + 1)
             x_samples_list.append(np.linspace(left_bound, right_bound, section_samples))
 
-        # Which prediction function to use. Depends on the value of predict_y.
-        predict = self.predict_y if predict_y else self.predict_f
+        means_and_vars = None
 
-        # Predicts the means and variances for both x_samples
-        means_and_vars = predict(x_samples_list)
+        # Plots the regression according to the posterior distribution of the hyper-parameters
+        if param_posterior_available:
+            # Stores the optimized point estimates so they can be reapplied later
+            optimized_params = gf.utilities.parameter_dict(self)
+            f_samples = list()
+            # HMC samples of the posterior hyper-parameter distribution
+            samples, _ = self.posterior_sampling_results
+
+            for i in range(np.shape(samples)[1]):  # Loops over each HMC iteration
+                for var, var_samples in zip(self.trainable_parameters, samples):
+                    # Sets the value of each parameter to its value at HMC iteration i
+                    var.assign(var_samples[i])
+
+                # Gets some number of f samples according to the current parameter values (default 3)
+                f = self.predict_f_samples(x_samples_list, 3)
+                f_samples.append(f)
+
+            # Removes singleton iterables
+            f_samples = np.squeeze(f_samples)
+            # Mean f values over all samples
+            means = np.mean(f_samples, axis=(0, 2))
+            # Variance of f over all samples
+            vars = np.var(f_samples, axis=(0, 2))
+            means_and_vars = list(zip(means, vars))
+
+            # Predicts the means and variances over the outcome variable if predict_y is true
+            if predict_y:
+                means_and_vars = [m.likelihood.predict_mean_and_var(*mvs)
+                                  for mvs, m in zip(means_and_vars, self.models)]
+
+            # Reassigns the optimized point estimates of the hyper-parameters
+            gf.utilities.multiple_assign(self, optimized_params)
+
+        # Plots the regression according to the optimized point estimates of the hyper-parameters
+        else:
+            # Which prediction function to use. Depends on the value of predict_y.
+            predict = self.predict_y if predict_y else self.predict_f
+
+            # Predicts the means and variances for both x_samples
+            means_and_vars = np.squeeze(predict(x_samples_list))
 
         # Ensures only a single label occurs in the pyplot legend
         labeled = False
 
         for x_samples, (mean, var) in zip(x_samples_list, means_and_vars):
             # Plots the 95% confidence interval
-            plt.fill_between(x_samples, mean[:, 0] - 1.96 * np.sqrt(var[:, 0]),
-                             mean[:, 0] + 1.96 * np.sqrt(var[:, 0]), color=col, alpha=0.2)
+            plt.fill_between(x_samples, mean - 1.96 * np.sqrt(var),
+                             mean + 1.96 * np.sqrt(var), color=col, alpha=0.2)
 
             # Plots the mean function predicted by the GP
-            plt.plot(x_samples, mean[:, 0], c=col, label=('$M_D$' if not labeled else ""))
+            plt.plot(x_samples, mean, c=col, label=('$M_D$' if not labeled else ""))
             labeled = True
 
         if num_f_samples > 0 and not predict_y:
@@ -489,11 +703,44 @@ class GPMContainer(Module):
                 for f_sample in f_samples:
                     plt.plot(x_samples, f_sample[:, 0], linewidth=0.2, c=col)
 
+        if isinstance(self.models[0], SVGP):
+            labeled = False
+            for m in self.models:
+                Z = m.inducing_variable.Z.numpy()
+                plt.plot(Z, np.zeros_like(Z), "k|", mew=2, label=("Inducing locations"if not labeled else ""),
+                         color='purple')
+                labeled = True
+
+    def plot_posterior_param_samples(self, mode="iterations", bins=20):
+        param_to_name = {param: name for name, param in gf.utilities.parameter_dict(self).items()}
+        params = self.trainable_parameters
+        samples, _ = self.posterior_sampling_results
+
+        if mode.lower() in ['sequentially', 'sequence', 'iterations', 'iter']:
+            plt.figure(figsize=(8, 4))
+            for val, param in zip(samples, params):
+                plt.plot(tf.squeeze(val), label=param_to_name[param])
+            plt.legend(bbox_to_anchor=(1.0, 1.0))
+            plt.xlabel("HMC iteration")
+            plt.ylabel("constrained parameter values")
+
+        elif mode.lower() in ['marginal', 'histogram', 'hist', 'individual']:
+            dim = math.ceil(np.sqrt(len(self.trainable_parameters)))
+            fig, axes = plt.subplots(dim, dim, constrained_layout=True)
+            for ax, val, param in zip(axes.flatten(), samples, params):
+                ax.hist(np.stack(val).flatten(), bins=20)
+                ax.set_title(param_to_name[param])
+                ax.axvline(param.numpy(), linestyle='--', c='k')
+            fig.suptitle("constrained parameter samples")
+
+        else:
+            raise ValueError("{} is not a valid mode".format(mode))
+
     def _ensure_same_params(self, params: List[str]) -> None:
         """
         Sets all parameters of the models corresponding to the 'params' list to be the same object.
 
-        Currently, the only options are 'kernel', 'likelihood', 'mean_function', and 'inducing_variable'
+        Currently, the only options are 'kernel', 'likelihood', 'mean_function'
 
         :param params: List of strings. Each string corresponds to a parameter.
         """
@@ -512,10 +759,6 @@ class GPMContainer(Module):
                 for i in range(1, self.n_models):
                     self.models[i].mean_function = self.models[0].mean_function
 
-            elif p in ['iv', 'ind var', 'inducing variable', 'inducing_variable']:
-                for i in range(1, self.n_models):
-                    self.models[i].inducing_variable = self.models[0].inducing_variable
-
             else:
                 warnings.warn(f"'{p}' is not a valid name of a parameter that can be shared.")
 
@@ -523,7 +766,7 @@ class GPMContainer(Module):
         """
         Sets all parameters of the models corresponding to the 'params' list to be the different objects.
 
-        Currently, the only options are 'kernel', 'likelihood', 'mean_function', and 'inducing_variable'
+        Currently, the only options are 'kernel', 'likelihood', 'mean_function'
 
         :param params: List of strings. Each string corresponds to a parameter.
         """
@@ -544,11 +787,6 @@ class GPMContainer(Module):
                 for i in range(1, self.n_models):
                     if self.models[i].mean_function is self.models[0].mean_function:
                         self.models[i].mean_function = gf.utilities.deepcopy(self.models[0].mean_function)
-
-            elif p in ['iv', 'ind var', 'inducing variable', 'inducing_variable']:
-                for i in range(1, self.n_models):
-                    if self.models[i].inducing_variable is self.models[0].inducing_variable:
-                        self.models[i].inducing_variable = gf.utilities.deepcopy(self.models[0].inducing_variable)
 
             else:
                 warnings.warn(f"'{p}' is not a valid name of a parameter that can be shared.")

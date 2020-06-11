@@ -5,7 +5,7 @@ import numpy as np
 import gpflow as gf
 import bnqdflow as bf
 
-from typing import Union, List, Callable, Any, Tuple
+from typing import Union, List, Callable, Any, Tuple, Optional
 
 from tensorflow import Tensor
 
@@ -69,7 +69,7 @@ class SimpleAnalysis(Analysis):
             intervention_point: Tensor,
             share_params: bool = True,
             marginal_likelihood_method: str = "bic",
-            optimizer: Any = None,
+            optimizer: Any = gf.optimizers.Scipy(),
             effect_size_measure=None):
         """
         :param data:
@@ -180,7 +180,8 @@ class SimpleAnalysis(Analysis):
 
         self.__regression_object = None
 
-    def train(self, optimizer=None, verbose=True):
+    def train(self, optimizer=None, scipy_method: Optional[str] = None, max_iter: Optional[int] = 1000,
+              loss_variance_goal: Optional[float] = None, verbose=True):
         """
         Trains both the continuous and the discontinuous model
         """
@@ -194,18 +195,11 @@ class SimpleAnalysis(Analysis):
         # Uses the optimizer passed to the function, if not,
         # then the optimizer assigned to the BNQDAnalysis object.
         # Will only be None if both are None
-        optimizer = optimizer if optimizer else self.optimizer
+        optimizer = optimizer if optimizer is not None else self.optimizer
 
-        # If neither the optimizer passed to the function, nor self.optimizer are None,
-        # use this optimizer to train the models
-        if optimizer:
-            self.continuous_model.train(optimizer, verbose=verbose)
-            self.discontinuous_model.train(optimizer, verbose=verbose)
-
-        # If both are none, train the models with the default optimizer
-        else:
-            self.continuous_model.train(verbose=verbose)
-            self.discontinuous_model.train(verbose=verbose)
+        for model in [self.continuous_model, self.discontinuous_model]:
+            model.train(optimizer=optimizer, scipy_method=scipy_method, max_iter=max_iter,
+                        loss_variance_goal=loss_variance_goal, verbose=verbose)
 
     def plot_regressions(self, n_samples=100, padding: Union[float, Tuple[float]] = 0.2, num_f_samples=5,
                          plot_data=True, predict_y=False, separate=True):

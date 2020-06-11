@@ -19,3 +19,4 @@ from . import (
 # TODO: add data splitting function
 # TODO: add fuzzy effect size measure
 # TODO: test the correctness of the likelihoods of the control and intervention model separately
+import tensorflow_probability
