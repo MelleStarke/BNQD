@@ -353,7 +353,7 @@ def compare_modules(source: tf.Module, target: tf.Module, condition: Callable[[o
 Visitor implementation using a decorator.
 Taken from https://tavianator.com/the-visitor-pattern-in-python/.
 Written by Tavian Barnes, June 19, 2014.
-Adapted with a better error message.
+Adapted to support differently named decorated functions within the same class.
 """
 
 
@@ -362,36 +362,32 @@ def _qualname(obj):
     return obj.__module__ + '.' + obj.__qualname__
 
 
-def _declaring_class(obj):
-    """Get the name of the class that declared an object."""
-    name = _qualname(obj)
-    return name[:name.rfind('.')]
-
-
 # Stores the actual visitor methods
 _methods = {}
 
 
 # Delegating visitor implementation
-def _visitor_impl(self, arg):
+def _visitor_impl(fn_name, self, visitor_obj, *args, **kwargs):
     """Actual visitor method implementation."""
     try:
-        method = _methods[(_qualname(type(self)), type(arg))]
+        method = _methods[(fn_name, type(visitor_obj))]
     except KeyError as e:
-        raise KeyError("{}. Likely because there does not exist an implementation of the function in question in class "
-                       "{} for visitor {}".format(e, self.__class__.__name__, arg.__class__.__name__))
-    return method(self, arg)
+        raise KeyError("{}. Likely because there does not exist an implementation of the function "
+                       "{} for visitor {}".format(e, fn_name, visitor_obj.__class__.__name__))
+    return method(self, visitor_obj, *args, **kwargs)
 
 
 # The actual @visitor decorator
-def visitor(arg_type):
+def visitor(visitor_type):
     """Decorator that creates a visitor method."""
-
     def decorator(fn):
-        declaring_class = _declaring_class(fn)
-        _methods[(declaring_class, arg_type)] = fn
+        function_name = _qualname(fn)
+        _methods[(function_name, visitor_type)] = fn
 
-        # Replace all decorated methods with _visitor_impl
-        return _visitor_impl
+        # Passes all required and optional arguments together with the full function name of the specific decorator use
+        def wrapper(self, visitor_obj, *args, **kwargs):
+            return _visitor_impl(function_name, self, visitor_obj, *args, **kwargs)
+
+        return wrapper
 
     return decorator

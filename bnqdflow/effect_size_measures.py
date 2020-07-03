@@ -7,8 +7,12 @@ from typing import Tuple
 
 from abc import abstractmethod, ABC
 
-from bnqdflow.analyses import Analysis, SimpleAnalysis, PlaceholderAnalysis
+from bnqdflow.analyses import Analysis, SimpleAnalysis, PlaceholderAnalysis, MultiKernelAnalysis
 from bnqdflow.util import visitor
+
+
+def normalize(array):
+    return np.array(array) / np.sum(array)
 
 
 class EffectSizeMeasure(ABC):
@@ -39,7 +43,11 @@ class Sharp(EffectSizeMeasure):
     Calculates the effect size while assuming there is a discrete separation between the data used by the sub-models of
     the discontinuous model.
     """
-    def __init__(self, n_samples: int = 300, n_mc_samples: int = 500, x_range: Tuple[float, float] = None):
+    def __init__(self,
+                 n_samples: int = 300,
+                 n_mc_samples: int = 500,
+                 x_range: Tuple[float, float] = None,
+                 lml_method = None):
         """
         :param n_samples: Number of x-samples used for the effect size distribution.
         :param n_mc_samples: Number of Monte Carlo samples for the BMA density estimate.
@@ -48,6 +56,7 @@ class Sharp(EffectSizeMeasure):
         self.n_samples = n_samples
         self.n_mc_samples = n_mc_samples
         self.x_range = x_range
+        self.lml_method = lml_method
 
     @visitor(Analysis)
     def calculate_effect_size(self, analysis):
@@ -79,7 +88,7 @@ class Sharp(EffectSizeMeasure):
         ip = analysis.intervention_point
 
         # Means and variances of the two sub-models of the discontinuous model.
-        (m0b, v0b), (m1b, v1b) = analysis.discontinuous_model.predict_y([ip, ip])
+        (m0b, v0b), (m1b, v1b) = analysis.disc_m.predict_y([ip, ip])
 
         # Mean and standard dev differences. Used to calculate the discontinuous model's effect size estimate.
         disc_mean_diff = np.squeeze(m1b - m0b)  # TODO: why was this swapped around?
@@ -91,6 +100,7 @@ class Sharp(EffectSizeMeasure):
             pval = stats.norm.cdf(x=0, loc=disc_mean_diff, scale=disc_std_diff)
 
         if self.x_range is None:
+            print("x range is none")
             xmin, xmax = (np.min([disc_mean_diff - 4 * disc_std_diff, -0.1 * disc_std_diff]),
                           np.max([disc_mean_diff + 4 * disc_std_diff, 0.1 * disc_std_diff]))
         else:
@@ -150,17 +160,110 @@ class Sharp(EffectSizeMeasure):
             'es_transform': lambda z: z * disc_std_diff + disc_mean_diff
         }
 
+    @visitor(SimpleAnalysis)
+    def calculate_reduced_effect_size(self, analysis):
+        if self.effect_size is None:
+            self.calculate_effect_size(analysis)
+
+        xrange = self.effect_size['es_range']
+        es_disc = self.effect_size['es_disc']
+        es_bma = self.effect_size['es_bma']
+
+        es_disc = np.sum(xrange * normalize(es_disc))
+        es_bma = np.sum(xrange * normalize(es_bma))
+
+        return {
+            # Expected effect size value under the discontinuous model
+            'es_disc': es_disc,
+            # Expected effect size value according to the BMA
+            'es_bma': es_bma
+        }
+
+    @visitor(MultiKernelAnalysis)
+    def calculate_effect_size(self, analysis):
+        es_list = analysis.get_effect_sizes(measure=None, force_recalc=True)
+
+        assert np.all([es_list[0]['es_range'] == es['es_range'] for es in es_list]), \
+            "All effect sizes must be over the same x range in order to obtain a distribution over " \
+            "the total effect size"
+
+        model_probs = np.array(analysis.map(lambda a: list(a.posterior_model_probabilities())))
+        model_evidences = np.array([[np.exp(c.log_posterior_density(method=self.lml_method)) for c in containers]
+                                    for containers in [a.containers for a in analysis.analyses]])
+        kernel_evidences = normalize(np.sum(model_evidences, axis=1))
+
+        print(f"kernel evidences shape: {np.shape(kernel_evidences)}")
+
+        es_bma = np.sum([es['es_bma'] for es in es_list] * kernel_evidences[:, None], axis=0)
+
+        print(f"expected bma es: {np.sum(normalize(es_bma) * es_list[0]['es_range'])}\n(shape={np.shape(es_bma)})")
+
+        disc_model_evidences = normalize(model_evidences[:, 1])
+
+        es_disc = np.sum([es['es_disc'] for es in es_list] * disc_model_evidences[:, None], axis=0)
+
+        plt.title('differences')
+        plt.plot(es_list[0]['es_range'], es_bma - es_disc)
+        plt.show()
+
+        print(f"expected disc es: {np.sum(normalize(es_bma) * es_list[0]['es_range'])}\n(shape={np.shape(es_disc)})")
+
+        self.effect_size = {
+            'k_probs': kernel_evidences,
+            'm_evds': model_evidences,
+            'm_probs': model_probs,
+            'es_bma': es_bma,
+            'es_disc': es_disc,
+            'es_range': es_list[0]['es_range']
+        }
+
+    @visitor(MultiKernelAnalysis)
+    def calculate_reduced_effect_size(self, analysis):
+        if self.effect_size is not None:
+            es_bma = self.effect_size['es_bma']
+            es_disc = self.effect_size['es_disc']
+            es_range = self.effect_size['es_range']
+
+            return {
+                'es_bma': np.sum(normalize(es_bma) * es_range),
+                'es_disc': np.sum(normalize(es_disc) * es_range)
+            }
+
+        else:
+            es_list = analysis.get_effect_sizes(measure=None, force_recalc=True)
+            model_probs = np.array(analysis.map(lambda a: list(a.posterior_model_probabilities())))
+            model_evidences = np.array([[np.exp(m.log_posterior_density(method=self.lml_method)) for m in c.models]
+                                        for c in analysis.containers])
+            kernel_evidences = np.sum(model_evidences * model_probs, axis=1)
+            Z = np.sum(kernel_evidences)
+            kernel_evidences = kernel_evidences / Z
+
+            es_bma_list = np.array([es['es_bma'] for es in es_list])
+            es_disc_list = np.array([es['es_disc'] for es in es_list])
+            es_range_list = np.array([es['es_range'] for es in es_list])
+
+            es_bma = np.sum([prob * es * evd for prob, es, evd
+                             in zip(es_bma_list, es_range_list, kernel_evidences)])
+            es_disc = np.sum([prob * es * evd for prob, es, evd
+                              in zip(es_disc_list, es_range_list, model_evidences[:, 1])])
+
+            return {
+                'es_bma': es_bma,
+                'es_disc': es_disc
+            }
+
     @visitor(PlaceholderAnalysis)
     def calculate_effect_size(self, analysis: PlaceholderAnalysis) -> None:
         print("There doesn't exist an implementation for Sharp.calculate_effect_size() for {}"
               .format(analysis.__class__.__name__))
         return None
 
-    def plot_bma(self):
-        plt.title("BMA effect size")
+    def plot(self):
+        plt.title("Effect size")
         x_range = self.effect_size['es_range']
-        plt.plot(x_range, self.effect_size['es_bma'], label='BMA')
-        plt.plot(x_range, self.effect_size['es_disc'], label='Discontinuous effect size estimate')
+        plt.fill_between(x_range, self.effect_size['es_bma'], label='BMA ES', alpha=0.5, color="#05668d")
+        plt.fill_between(x_range, self.effect_size['es_disc'], label='Disc ES', alpha=0.5, color="#02c39a")
+
 
 
 class FuzzyEffectSize(EffectSizeMeasure):

@@ -153,10 +153,10 @@ if TEST_ANALYSIS:
     plt.legend()
     plt.show()
 
-    cm = a.continuous_model.model
-    dm = a.discontinuous_model
-    dcm = a.discontinuous_model.control_model
-    dim = a.discontinuous_model.intervention_model
+    cm = a.cont_m.model
+    dm = a.disc_m
+    dcm = a.disc_m.control_model
+    dim = a.disc_m.intervention_model
     print("log marginal likelihoods:\n\tcontinuous model: {}\n\tdiscontinuous control model: {}\n"
           "\tdiscontinuous intervention model: {}"
           .format(cm.maximum_log_likelihood_objective(), dcm.maximum_log_likelihood_objective(), dim.maximum_log_likelihood_objective()))

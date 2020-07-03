@@ -96,7 +96,7 @@ class GPMContainer(BayesianModel):
             intervention_points: Optional[List[Tensor]] = None,
             share_params: Optional[bool] = True,
             gpm_type: Optional[str] = 'gpr',
-            inducing_var_ratio: Optional[Union[Tuple[float], float]] = 0.01
+            inducing_var_ratio: Optional[Union[Tuple[float, ...], float]] = 0.01
     ):
         super().__init__()
 
@@ -146,7 +146,7 @@ class GPMContainer(BayesianModel):
         self.is_trained = False
         self.posterior_sampling_results = None
         self.posterior_gp_regression = None
-
+        self.__hmc_evidence = None
 
     @staticmethod
     def generate_gp_models(
@@ -254,8 +254,8 @@ class GPMContainer(BayesianModel):
         Whether or not the models share hyper parameters.
         """
         if self.n_models < 2:
-            warnings.warn("The GPMContainer contains less then two models. Therefore, parameters cannot be shared "
-                          "between models by definition. share_params will return True by default in this case.")
+            warnings.warn("The GPMContainer contains less then two models. Therefore, parameters cannot be shared " +
+                          "between models by definition. shared_params will return True by default in this case.")
             return True
 
         for i in range(1, self.n_models):
@@ -323,7 +323,10 @@ class GPMContainer(BayesianModel):
         """
         Whether or not sparse models are contained
         """
-        return all(map(lambda m: m.inducing_variable is not None, self.models))
+        try:
+            return all(map(lambda m: m.inducing_variable is not None, self.models))
+        except:
+            return False
 
     @property
     def inducing_variables(self):
@@ -380,7 +383,9 @@ class GPMContainer(BayesianModel):
             return self.maximum_log_likelihood_objective(*args, **kwargs) + self.log_prior_density()
 
         elif method in ['mcmc', 'hmc', 'sampled']:
-            return tf.math.log(tf.math.reduce_mean(np.exp(self.posterior_sampling_results[1])))
+            if self.__hmc_evidence is None:
+                self.__hmc_evidence = tf.math.log(tf.math.reduce_mean(np.exp(self.posterior_sampling_results[1])))
+            return self.__hmc_evidence
 
         elif method in ['svgp', 'sparse', 'elbo']:
             return self.mean_elbo(*args, **kwargs)
@@ -427,9 +432,7 @@ class GPMContainer(BayesianModel):
             optimizer: object = None,
             scipy_method: Optional[str] = None,
             max_iter: Optional[int] = 1000,
-            minibatch_ratio: Optional[float] = 0.02,
-            loss_variance_goal: Optional[float] = None,
-            verbose=True
+            loss_variance_goal: Optional[float] = None
     ) -> Optional[List[Tensor]]:
         """
         Trains all contained models.
@@ -447,7 +450,7 @@ class GPMContainer(BayesianModel):
         is_sparse = self.is_sparse
 
         if optimizer is None:
-            optimizer = tf.optimizers.Adam() if is_sparse else optimizers.Scipy()
+            optimizer = tf.optimizers.Adam(0.01) if is_sparse else optimizers.Scipy()
 
         self.optimizer = optimizer
         losses = list()
@@ -480,8 +483,8 @@ class GPMContainer(BayesianModel):
                 else:
                     sys.stdout.write("\rprogress: %d%%" % progress)
                 sys.stdout.flush()
+            print()
 
-        print()
         self.is_trained = True
         return losses
 
@@ -533,6 +536,7 @@ class GPMContainer(BayesianModel):
                           (pkr.inner_results.proposed_results.target_log_prob, trace_fn(states, pkr))),
             )
 
+        self.__hmc_evidence = None
         samples, (log_likelihoods, traces) = run_chain_fn()
         parameter_samples = hmc_helper.convert_to_constrained_values(samples)
         self.posterior_sampling_results = parameter_samples, log_likelihoods
@@ -781,13 +785,15 @@ class GPMContainer(BayesianModel):
 
             # Predicts the means and variances for both x_samples
             means_and_vars = np.squeeze(predict(x_samples_list))
+            if self.is_continuous:
+                means_and_vars = [means_and_vars]
 
         # Ensures only a single label occurs in the pyplot legend
         labeled = False
 
         for x_samples, (mean, var) in zip(x_samples_list, means_and_vars):
             # Plots the 95% confidence interval
-            plt.fill_between(x_samples, mean - 1.96 * np.sqrt(var),
+            plt.fill_between(np.squeeze(x_samples), mean - 1.96 * np.sqrt(var),
                              mean + 1.96 * np.sqrt(var), color=col, alpha=0.2)
 
             # Plots the mean function predicted by the GP

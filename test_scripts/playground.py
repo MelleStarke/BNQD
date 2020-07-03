@@ -115,7 +115,7 @@ x = np.linspace(-1, 1, n)  # Evenly distributed x values
 
 # Latent function options
 #f = 0.8*np.sin(x) + 0.2*x**2 + 0.2 * np.cos(x / 1) + dc * (x > ip)  # Underlying function
-#f = (0.8 - 1.6 * (x > ip))*x + dc * (x > ip)
+f = (0.8 - 1.6 * (x > ip))*x + dc * (x > ip)
 f = np.sin(x * 3 * 3.14) + 0.3 * np.cos(x * 9 * 3.14) + 0.5 * np.sin(x * 7 * 3.14) + dc * (x > ip)
 y = np.random.normal(f, sigma + sigma_d * (x > ip), size=n)  # y values as the underlying function + noise
 
@@ -136,112 +136,159 @@ yi = yd[xd <= ip2]
 xe = xd[xd > ip2]
 ye = yd[xd > ip2]
 
+import numpy as np
+import matplotlib.pyplot as plt
+import gpflow as gf
+import bnqdflow as bf
+import sys
+import tensorflow as tf
 
-def plot_dist(dist, range = (-2, 2), n = 100):
-    xs = np.linspace(*range, n)
-    plt.plot(xs, np.exp(dist.log_prob(xs)))
+from gpflow import kernels as ks
 
-mc = GPMContainer(k, [(xc, yc), (xd, yd)], intervention_points=[0], gpm_type='hmc')
-mc.kernel.variance.prior = dist.Normal(tf.constant(0.5, dtype=tf.float64), tf.constant(3, dtype=tf.float64))
-mc.kernel.lengthscales.prior = dist.Normal(tf.constant(1, dtype=tf.float64), tf.constant(3, dtype=tf.float64))
-mc.likelihood.variance.prior = dist.Normal(tf.constant(0.5, dtype=tf.float64), tf.constant(3, dtype=tf.float64))
+from bnqdflow.analyses import MultiKernelAnalysis
 
+summ = gf.utilities.print_summary
 
-def func(x):
-    return np.sin(x * 3 * 3.14) + 0.3 * np.cos(x * 9 * 3.14) + 0.5 * np.sin(x * 7 * 3.14)
+# %% md
 
-from gpflow.ci_utils import ci_niter
+## Dataset Generation
 
-"""rng = np.random.RandomState(123)
-tf.random.set_seed(42)
+# %%
 
-n = 100
+ip = 0.0  # single intervention point
+dc = 0.5
+sigma = 0.2  # Standard deviation
+n = 100  # Number of data points
 
-x = np.array(range(n))
-y = x ** 2.
+x = np.linspace(-3, 3, n)  # Evenly distributed x values
 
-x1, y1 = x[x < int(n/2)], y[x < int(n/2)]
-x2, y2 = x[x >= int(n/2)], y[x >= int(n/2)]
+f = lambda x: 0.8 * np.sin(x) + 0.2 * x ** 2 + 0.2 * np.cos(x / 1) + dc * (x > ip)  # Underlying function
+#f = lambda x: (0.8 - 1.6 * (x > ip))*x + dc * (x > ip)
+y = np.random.normal(f(x), sigma, size=n)  # y values as the underlying function + noise
 
-d1, d2 = ((x1), (y1)), ((x2), (y2))
+# Data used by the control model (pre-intervention)
+x1 = x[x <= ip]
+y1 = y[x <= ip]
 
-data = [d1, d2]
+# Data used by the (post-)intervention model
+x2 = x[x > ip]
+y2 = y[x > ip]
 
-print(f"data:\n{np.array(data)}")
+data = [(x1, y1), (x2, y2)]
 
-it = MiniBatchIterator(data, 0.1)
-
-for i, batch in enumerate(it):
-    values = (list(map(lambda data: tuple(map(lambda v: v.numpy(), data)), batch)))
-    print(f"\n\nbatch {i}:\n{values}")"""
-
-
-losses = mc.train(optimizer=Adam(0.1), loss_variance_goal=0.1)
-plt.plot(losses)
-plt.title("MAP training losses")
-plt.xlabel("Iteration")
-plt.ylabel("Training loss")
-plt.show()
-gf.utilities.print_summary(mc)
-mc.sample_posterior_params()
-mc.plot_posterior_param_samples('marginal')
-plt.show()
-mc.plot_posterior_param_samples('sequence')
+plt.plot(x1, f(x1), c='blue')
+plt.plot(x2, f(x2), c='orange')
+plt.scatter(x1, y1, marker='+', c='blue', alpha=0.5)
+plt.scatter(x2, y2, marker='x', c='orange', alpha=0.5)
 plt.show()
 
-plt.plot(mc.posterior_sampling_results[1])
-plt.title("Likelihood values during HMC sampling")
-plt.xlabel("Iteration")
-plt.ylabel(r"$p(D|\theta)p(\theta)$")
+# %% md
+
+## Model Specification
+
+# %%
+
+kernels = [
+    ks.Constant(),
+    ks.Linear() + ks.Constant(),
+    ks.Exponential(),
+    ks.RBF(),
+    ks.Periodic(ks.RationalQuadratic())
+]
+
+
+class SupTest(tf.Module):
+    def __init__(self, data):
+        self.cont_data = None
+        self.cont_data = data
+
+
+class Test(SupTest):
+    def __init__(self, data):
+        self.cont_m = None
+        super().__init__(data)
+
+    @property
+    def cont_data(self):
+        if self.cont_m is None:
+            return self.__cont_data
+        else:
+            self.__cont_data = None
+            return int(self.cont_m)
+
+    @cont_data.setter
+    def cont_data(self, data):
+        if self.cont_m is None:
+            self.__cont_data = data
+
+
+test = Test(5)
+
+print(test.cont_data)
+test.cont_data = 7
+print(test.cont_data)
+test.cont_m = 5
+print(test.cont_data)
+test.cont_data = 7
+print(test.cont_data)
+
+a = MultiKernelAnalysis(
+    kernels,
+    data=data,
+    intervention_point=ip,
+    effect_size_measure=bf.effect_size_measures.Sharp(x_range=(-1, 3.5))
+)
+
+a.init_models()
+
+# summ(a)
+
+# %% md
+
+## Model Training
+
+# %%
+
+a.train()
+a.map(lambda a: a.plot_regressions(separate=True))
+# %% md
+
+## Effect Sizes
+
+# %%
+
+ess = a.get_effect_sizes()
+
+fucking_kernel_names_jezus_fucking_christ_just_give_me_a_goddamned_list_of_kernel_names = deepcopy(a.kernel_names)
+
+for sa, name in zip(a.analyses, fucking_kernel_names_jezus_fucking_christ_just_give_me_a_goddamned_list_of_kernel_names):
+    sa._effect_size_measure.plot()
+    plt.title(name)
+    plt.legend()
+    plt.show()
+
+a.total_effect_size(bf.effect_size_measures.Sharp())
+a.effect_size_measure.plot()
+plt.title('total effect size')
+plt.legend()
 plt.show()
 
-print(f"Marginal likelihood estimates:\n\tnative: {mc.log_posterior_density('nat')}"
-      f"\n\tBIC: {mc.log_posterior_density('bic')}\n\tHMC: ")
+# %% md
 
-mc.plot_regression()
-plt.show()
+## Metrics
+
+# %%
+
+for i, k in enumerate(fucking_kernel_names_jezus_fucking_christ_just_give_me_a_goddamned_list_of_kernel_names):
+    print(f"kernel: {k}\n"
+          f"\tlog bayes factor: {a.log_bayes_factors()[i]}\n"
+          f"\texpected effect size: {a.get_reduced_effect_sizes()[i]}\n"
+          f"\tnormalized kernel evidence: {a.effect_size_measure.effect_size['k_evds'][i]}\n"
+          f"\tmodel evidences: {a.effect_size_measure.effect_size['m_evds'][i]}\n"
+          f"\tindividual posterior model probs: {a.effect_size_measure.effect_size['m_probs'][i]}\n\n")
+
+print(f"total log BF:\n{a.total_log_bayes_factor()}\n"
+      f"total expected BMA effect size: {a.total_reduced_effect_size()}")
 
 
 
-sys.exit()
-mc.train()
-mc.plot_regression()
-plt.show()
-
-mc.sample_posterior_params(n_samples=200, n_burnin_steps=100)
-mc.plot_posterior_param_samples(mode='marginal')
-plt.show()
-#plt.plot(tf.squeeze(like_samples), label="log likelihood")
-plt.show()
-mc.plot_regression()
-plt.show()
-mc.plot_regression(predict_y=True)
-plt.show()
-
-"""
-for i, m in enumerate(mc.models):
-    for p in m.trainable_parameters:
-        if p.prior is not None:
-            plt.figure()
-            plt.title(f'model {i}; {p.name}')
-            plot_dist(p.prior)
-            plt.show()"""
-
-gf.utilities.print_summary(mc)
-
-print("log marginal likelihoods:\n\tBIC: {}\n\tnative: {}\n\tHMC: {}"
-      .format(*map(lambda m: mc.log_posterior_density(m), ['bic', 'nat', 'hmc'])))
-
-"""ks[1].variance.prior = dist.Gamma(np.float64(20), np.float64(4.35))
-m1 = None
-for k in ks:
-    m1 = GPMContainer(gf.utilities.deepcopy(k), [(x, y)], [])
-    m2 = GPMContainer(gf.utilities.deepcopy(k), [(xc, yc), (xd, yd)], [ip])
-    for name, m in zip(['c', 'd'], [m1, m2]):
-        m.train()
-        m.plot_regression()
-        plt.show()
-        print(f"{name} l: {m.log_posterior_density()}")
-
-print(f"trainable parameters: {m1.trainable_parameters}")
-print(f"log prior density: {m1.kernel.variance.log_prior_density()}")"""

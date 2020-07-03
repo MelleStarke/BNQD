@@ -25,9 +25,9 @@ def IS_GPMODEL(o):
     return isinstance(o, GPModel)
 
 
-def SET_USE_CUSTOM_KERNEL_COPY_FUNCTION(b: bool = True):
+def SET_USE_CUSTOM_KERNEL_COPY_FUNCTION(b: bool = False):
     State.use_custom_kernel_copy_function = b
 
 @property
 def USE_CUSTOM_KERNEL_COPY_FUNCTION():
-    return State.use_custom_kernel_copy_function
+    return bool(State.use_custom_kernel_copy_function)
