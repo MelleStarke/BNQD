@@ -1,4 +1,5 @@
 # BNQD
+Reimplementation and extension of [BNQD by Max Hinne](https://github.com/mhinne/BNQD)
 
 ### Versions of the most important packages
 | Package     | Version |
